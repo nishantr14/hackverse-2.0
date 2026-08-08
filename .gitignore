@@ -35,3 +35,6 @@ pgdata/
 
 # Local-only compose override (port conflicts etc). Never shared.
 infra/docker-compose.override.yml
+
+# Cloned source repos — tens of MB each, re-clonable in seconds.
+data/repos/
