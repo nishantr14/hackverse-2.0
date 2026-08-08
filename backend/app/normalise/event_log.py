@@ -740,17 +740,24 @@ def repair_invalid_cases(session: Session, stats: Stats) -> None:
         ),
         projects,
     )
+    # Only the cases this function emptied. An unqualified "delete every case
+    # with no events" also removes open PRs that have not been reviewed yet —
+    # legitimate cases with no activity — and the PR mapper simply recreates
+    # them thirty seconds later, so the sweep would churn 616 rows a run and
+    # report them as repairs.
     orphans = session.execute(
         text(
-            """
+            f"""
             DELETE FROM work_item w
-             WHERE NOT EXISTS (SELECT 1 FROM event_log e
+             WHERE {invalid_case}
+               AND NOT EXISTS (SELECT 1 FROM event_log e
                                 WHERE e.work_item_id = w.work_item_id)
                AND NOT EXISTS (SELECT 1 FROM ci_run c
                                 WHERE c.work_item_id = w.work_item_id)
                AND w.jira_created_at IS NULL
             """
-        )
+        ),
+        projects,
     ).rowcount
     stats.repaired_events += len(moves)
     stats.repaired_cases += orphans or 0
@@ -853,6 +860,26 @@ def map_ci_runs(session: Session, stats: Stats) -> None:
     stats.add("ci_run", len(events))
     stats.ci_events = len(events)
     write_events(session, events)
+
+    # Upsert alone is not idempotent in the direction that matters here. A
+    # ci_run row that goes away — re-fetched into a different window, or
+    # deleted — leaves its event behind forever, and the CI event count then
+    # exceeds the CI table it is derived from. Events are only ever removed
+    # when the run backing them no longer exists.
+    stale = session.execute(
+        text(
+            """
+            DELETE FROM event_log e
+             WHERE e.activity = 'ci_run'
+               AND NOT EXISTS (
+                     SELECT 1 FROM ci_run c
+                      WHERE c.run_id = e.attrs->>'run_id'
+                        AND c.work_item_id IS NOT NULL)
+            """
+        )
+    ).rowcount
+    if stale:
+        logger.info("dropped %d ci_run events with no surviving run", stale)
     session.commit()
 
 

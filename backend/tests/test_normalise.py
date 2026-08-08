@@ -395,3 +395,28 @@ def test_rerunning_the_mapper_does_not_duplicate_events(pg_engine):
     with pg_engine.connect() as conn:
         after = conn.execute(text("SELECT count(*) FROM event_log")).scalar()
     assert after == before
+
+
+def test_ci_events_never_outnumber_the_runs_behind_them(conn):
+    """Upsert alone leaves an event behind when its ci_run row goes away.
+    That happened: 53,580 CI events survived a table that had been emptied,
+    so the log claimed more CI activity than the CI table contained.
+
+    Only one direction is a defect. A newly fetched run that the normaliser
+    has not mapped yet is normal and happens whenever ingestion is mid-flight;
+    an event with no run behind it is not.
+    """
+    if not _has_events(conn):
+        pytest.skip("event log is empty")
+    orphaned = conn.execute(
+        text(
+            """
+            SELECT count(*) FROM event_log e
+             WHERE e.activity = 'ci_run'
+               AND NOT EXISTS (SELECT 1 FROM ci_run c
+                                WHERE c.run_id = e.attrs->>'run_id'
+                                  AND c.work_item_id IS NOT NULL)
+            """
+        )
+    ).scalar()
+    assert orphaned == 0, f"{orphaned} CI events have no surviving run"
