@@ -182,11 +182,11 @@ query PullRequests($owner: String!, $name: String!, $cursor: String, $pageSize: 
         milestone { title number }
         labels(first: 20) { nodes { name } }
         files(first: 100) { nodes { path } }
-        reviews(first: 20) {
+        reviews(first: 100) {
           nodes { state submittedAt author { login __typename } }
         }
         timelineItems(
-          first: 30
+          first: 100
           itemTypes: [REVIEW_REQUESTED_EVENT, REOPENED_EVENT, HEAD_REF_FORCE_PUSHED_EVENT]
         ) {
           nodes {

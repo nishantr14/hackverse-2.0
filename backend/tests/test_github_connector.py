@@ -1046,3 +1046,18 @@ def test_page_size_reduction_stops_at_the_floor(clean_github_rows):
 
     with pytest.raises(GitHubError):
         _fetch(handler)
+
+
+def test_review_and_timeline_connections_are_not_capped_below_the_maximum():
+    """reviews(first: 20) truncated 228 of 5,632 PRs. Probed live, three of
+    them had 76, 80 and 23 reviews against the 20 we stored — and the busiest
+    PRs are exactly the contentious ones the process graph is about."""
+    import re
+
+    for connection in ("reviews", "timelineItems"):
+        match = re.search(rf"{connection}\(\s*\n?\s*first:\s*(\d+)", PR_QUERY)
+        assert match, f"{connection} has no literal page size"
+        assert int(match.group(1)) == MAX_PAGE_SIZE, (
+            f"{connection} is capped at {match.group(1)}; GitHub allows "
+            f"{MAX_PAGE_SIZE} and anything less silently drops the tail"
+        )
