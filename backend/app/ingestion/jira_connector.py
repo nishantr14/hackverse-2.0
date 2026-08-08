@@ -121,6 +121,28 @@ USER_VALUED_FIELDS = frozenset(
     {"assignee", "reporter", "creator", "watcher", "request participants"}
 )
 
+#: Changelog fields whose values we actually model, and therefore keep. Every
+#: one is a closed vocabulary — a status name, a component name, a priority —
+#: so none of them can carry free text a person typed.
+#:
+#: Anything absent from this set keeps its NAME and loses its VALUES. Measured
+#: on KAFKA: `description` fires 423 times and `Comment` 27, each carrying the
+#: full before-and-after text of something a human wrote. That is a lot of
+#: free text to store, model nothing with, and have to defend.
+MODELLED_FIELDS = frozenset(
+    {
+        "status",
+        "resolution",
+        "priority",
+        "issuetype",
+        "component",
+        "fix version",
+        "version",
+        "labels",
+        "sprint",
+    }
+)
+
 #: URL and avatar keys embed the username in a path. Nothing downstream reads
 #: them, so they are dropped rather than scrubbed.
 DROP_KEYS = frozenset({"self", "avatarUrls"})
@@ -188,20 +210,41 @@ def scrub_author(author: Any) -> dict[str, Any] | None:
 
 
 def scrub_changelog_item(item: dict[str, Any]) -> dict[str, Any]:
-    """Hash the from/to values of a changelog entry that records a person.
+    """Keep the from/to values of the fields we model. Drop the rest.
 
-    A status transition keeps its `fromString`/`toString` ("Open" -> "Patch
-    Available") because those are the state names the process graph is built
-    from. An assignee transition does not: its from/to are people.
+    Three cases, and the third is the one this got wrong at first.
+
+    A status transition keeps `fromString`/`toString` — "Open" -> "Patch
+    Available" is the state machine the whole product is built on.
+
+    An assignee transition has its values hashed: they are a username and a
+    real display name, in a payload with no user object anywhere in it.
+
+    EVERYTHING ELSE LOSES ITS VALUES ENTIRELY. A `description` change carries
+    the old and new description in full, and on KAFKA-20505 the old one had an
+    email address pasted into it. The identity guard caught it and aborted the
+    run at issue 1,201 of 2,155 — correctly. The fix is not to soften the
+    guard: it is to stop carrying free text we never model. We need status
+    transitions, not description diffs. The field name and the fact that it
+    changed are kept, which is all any downstream query asks for.
     """
     field_name = str(item.get("field") or "").strip().lower()
-    if field_name not in USER_VALUED_FIELDS:
+
+    if field_name in USER_VALUED_FIELDS:
+        out = dict(item)
+        for key in ("from", "to", "fromString", "toString"):
+            value = out.get(key)
+            out[key] = actor_hash(str(value)) if value else value
+        return out
+
+    if field_name in MODELLED_FIELDS:
         return {k: scrub_jira(v) for k, v in item.items()}
-    out = dict(item)
-    for key in ("from", "to", "fromString", "toString"):
-        value = out.get(key)
-        out[key] = actor_hash(str(value)) if value else value
-    return out
+
+    return {
+        "field": item.get("field"),
+        "fieldtype": item.get("fieldtype"),
+        "values_dropped": True,
+    }
 
 
 def scrub_jira(obj: Any) -> Any:
