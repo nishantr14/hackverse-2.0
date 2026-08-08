@@ -1,128 +1,158 @@
 # Engineering Spend Intelligence
 
-HackVerse 2.0 (IBM × Celonis × 1M1B, "AI for Business Transformation"
-track, 27 teams). **One sentence:** process mining for the software
-development lifecycle — a priced unit of work, joining GitHub activity,
-real Jira data, synthetic calendar/meeting time, and role-band rates into
-one event log, then computing cost, waste, and a counterfactual "what-if"
-simulator on top of it.
+HackVerse 2.0 (IBM × Celonis × 1M1B, "AI for Business Transformation"). **One
+sentence:** process mining for the software development lifecycle — a priced
+unit of work, joining real GitHub activity, real Apache Jira data, synthetic
+calendar and token overlays, and public role-band rates into one event log,
+then computing cost, waste, and a counterfactual what-if simulator on top.
 
-Any Claude Code session opened anywhere in this repo, by any teammate,
-should start from this file's context instead of re-deriving it.
+Any Claude Code session opened anywhere in this repo, by any teammate, starts
+from this file instead of re-deriving context.
 
-## Data sources — real vs synthetic
+---
 
-| Source | Status | Detail |
+## Locked decisions — do not re-litigate mid-build
+
+| # | Decision | Why |
 |---|---|---|
-| GitHub (`apache/kafka`, `apache/cassandra`) | **Real** | REST/GraphQL + Actions API — commits, PRs, reviews, CI runs. |
-| Apache Jira (`KAFKA`, `CASSANDRA` projects) | **Real** | `issues.apache.org/jira`, read anonymously via REST — no auth token needed for GET/search. |
-| Jira↔commit linkage | **Real, exact** | Apache's own commit convention prefixes commits with the ticket key (e.g. `KAFKA-16234: ...`). This is exact string extraction — **do not build a fuzzy-match fallback**, it isn't needed. |
-| Calendar / meeting time | **Synthetic** | Generated in `backend/app/synthetic/gen_calendar.py`. |
-| AI token usage | **Synthetic** | Generated in `backend/app/synthetic/gen_tokens.py`, unless swapped for a real IBM Bob usage export — same schema either way. |
+| 1 | **Repos: `apache/kafka` + one of `apache/flink` / `apache/pulsar`** | Kafka has 2,047 merged PRs in 12 months, 28 GitHub Actions workflows, and an active ASF Jira. Measured. |
+| 2 | **`apache/cassandra` is dropped** | 66 merged PRs in 12 months; it reviews via patches on Jira, not GitHub PRs. |
+| 3 | **`apache/spark` is banned** | 1 merged PR in 12 months — Spark closes PRs via a merge script, so `mergedAt` is null. |
+| 4 | **Jira is REAL** | `issues.apache.org/jira`, anonymous read, Jira **Server** so `/rest/api/2/` with `startAt` paging. The **changelog** is the event source, not the issue. |
+| 5 | **Commits come from a local git clone, never the API** | `git log --numstat` is free and far faster. The API is only for what git cannot know: PRs, reviews, review-request timing, Actions runs. |
+| 6 | **Case ID is a fallback chain** | `ticket_key` (regex `[A-Z]{2,10}-\d+` on PR title, then branch, then body) → `issue` → `pr`. Record `case_source`. Nothing is ever dropped. |
+| 7 | **Sprint = fixed 14-day windows**, written to `work_item.sprint` at ingestion | Open source has no sprints. Derived once so everyone splits identically. Call it a sprint proxy on stage. |
+| 8 | **Rates are PUBLIC and cited. Band assignment is INFERRED and labelled.** | Hourly figures come from a public compensation source with a URL on screen. Which band an actor sits in is a stated rule over contribution history. Never blur the two. |
+| 9 | **Meeting time is synthetic AND driven by one visible assumption** | `MEETING_HOURS_PER_WEEK` is config, exposed in the UI as a slider. The screen says "assumption", never "observed". |
+| 10 | **AI token usage is synthetic, Tier 2, never per-person** | `ai_usage` has no `actor_hash` column and must not gain one. |
+| 11 | **`source` on every row: `github` \| `jira` \| `synthetic`** | Drives the observed-vs-modelled badge in the UI. A row without it is a bug. |
+| 12 | **k-anonymity enforced in VIEWS, not application code** | Default k=5, fallback k=3, printed on screen when it triggers. The app role reads views only. |
+| 13 | **Never use lines of code as an effort proxy** | Session inference over timestamps. LoC is discredited and a judge will say so. |
+| 14 | **`merged` not `merge`. `approved` not `approve`.** | One spelling, decided. |
 
-Never present synthetic data as real in the UI or narration. Never build
-fuzzy matching for the Jira link — it's already exact.
+---
+
+## Canonical activity vocabulary
+
+The complete set. Nothing else is ever written to `event_log.activity`:
+
+```
+commit · review_requested · review · changes_requested · approved · merged
+reopened · force_push · ci_run · deploy
+ticket_created · ticket_started · ticket_in_review
+ticket_resolved · ticket_closed · ticket_reopened · meeting
+```
+
+Bots never become actors. Filter: dependabot, renovate, github-actions,
+asfgit, apache-*-bot, and any GitHub author whose `__typename` is `Bot`.
+Apache repos are heavily automated; unfiltered, bots dominate every metric.
+
+---
 
 ## Determinism discipline
 
-> Every number a human sees comes from SQL/pandas or a documented model.
-> AI (a narrator LLM call) only explains numbers that already exist
-> elsewhere — it never computes one.
+> Every number a human sees comes from SQL or pandas. AI explains numbers that
+> already exist. It never computes one.
 
-This applies everywhere: API responses, frontend views, and any narration
-text. `backend/app/narrate/narrator.py` is the *only* place an LLM call is
-allowed to touch output the user sees, and it must receive pre-computed
-figures, never raw data it summarizes into a number itself.
+`backend/app/narrate/narrator.py` is the only place an LLM may touch
+user-visible output, and it receives pre-computed figures, never raw data it
+summarises into a number itself.
 
-## Privacy rules
+---
 
-> Privacy by design, from the first commit ingested, not retrofitted.
+## Privacy rules — from the first commit ingested, never retrofitted
 
-- Pseudonymize actor identity at the ingestion loader: `sha256(login + salt)`
-  (`backend/app/ingestion/pseudonymize.py`).
-- The login→hash mapping table lives **physically outside** the analytics
-  DB — never in the same Postgres instance as `event_log`/`cost_event`.
-- Enforce a k-anonymity floor (default k=5, fallback k=3) at the query
-  layer. Print it on screen when it triggers.
-- Never build a per-person view for AI usage or any other metric.
-- The API uses a **read-only** Postgres role, separate from the
-  ingestion/loader's write role (`backend/app/db/session.py`).
+- Pseudonymise at the ingestion loader: `sha256(login + salt)[:16]`.
+- The login→hash mapping lives **physically outside** the analytics DB, in
+  `data/identity.db` (SQLite, gitignored), opened only by `ingestion/`.
+- k-anonymity floor enforced in views. Suppressed rows are **returned** with
+  null metrics and `suppressed = true`, never silently dropped, so the UI can
+  show that a value was withheld and print the threshold.
+- No per-person view for cost, capability or AI usage at any aggregation.
+- The API uses a read-only role granted on **views only**, never base tables.
+- Any feature knowable only after a work item finished is banned from any
+  model. Time-based splits only; a random split leaks the future.
+
+---
+
+## Land raw, then map
+
+Every API response goes into `raw_payload` before anything parses it. The
+mapper is a pure function from `raw_payload` to `event_log` with no network
+calls, so a mapping bug costs a 20-second re-run rather than a 40-minute
+re-fetch. This is not optional.
+
+---
 
 ## Schema — frozen
 
-**Requires all four teammates present to change.** This is the contract
-every workstream builds against before real rows exist. Canonical copy:
-[`docs/schema.sql`](../docs/schema.sql).
+Canonical copy: [`docs/schema.sql`](../docs/schema.sql). Requires all four
+teammates present to change. If a task appears to need a schema change, **stop
+and tell me** rather than changing it and continuing.
 
-```sql
-actor(actor_hash PK, role_band, tenure_bucket, first_seen)
--- no name, no email, no salary. mapping table lives outside this DB.
+---
 
-work_item(work_item_id PK, repo, component, epic, opened_at, closed_at, source_ref)
+## Ownership — do not edit outside your lane
 
-event_log(
-  event_id PK, work_item_id FK, actor_hash FK,
-  activity,        -- commit | review_requested | review | changes_requested
-                    -- | merge | ci_run | deploy
-  ts, duration_s,   -- duration inferred, not measured
-  attrs JSONB
-)
+| Path | Owner |
+|---|---|
+| `backend/app/config.py`, `db/`, `main.py` | Nishant |
+| `backend/app/ingestion/` | Nishant |
+| `backend/app/normalise/` | Dipen |
+| `backend/app/models/` | Dipen |
+| `scripts/validate_ingest.py` | Dipen |
+| `backend/app/cost/`, `waste/`, `synthetic/`, `sql/views/` | Diljit |
+| `backend/app/api/` | the owner of the lane behind each router |
+| `frontend/` | Livana |
+| `docs/schema.sql`, `infra/`, `.env.example` | Shared — announce before touching |
 
-cost_event(event_id FK, hours NUMERIC, rate_band NUMERIC, cost NUMERIC, basis TEXT)
--- basis: 'session_inferred' | 'ci_runner' | 'ai_tokens' | 'meeting'
+If a task appears to require editing outside your lane, stop and tell me.
 
-rate_card(role_band PK, hourly NUMERIC, source TEXT)
--- source is a public citation string, rendered in the UI
+---
 
-ci_run(run_id PK, work_item_id FK, ts, runner_minutes, conclusion)
-ai_usage(usage_id PK, work_item_id FK, ts, vendor, tokens_in, tokens_out, cost)
+## Working agreement
 
-variant(variant_id PK, repo, activity_sequence TEXT[], n_cases, total_cost)
-```
+- Do not add a dependency without telling me first.
+- Commit after every working increment. Never leave the tree broken.
+- All timestamps stored UTC, converted only at render.
+- Prefer a correct simple version now over a complete version later. We are on
+  a 36-hour clock with hard gates.
+
+---
 
 ## Tiers and gates
 
-Three hard gates. At each one, the rule is binary — no partial credit.
-
 | Tier | Scope |
 |---|---|
-| Tier 0 | End-to-end skeleton: ingestion → event_log → variant graph → ProcessView renders something real. |
-| Tier 1 | Spend + waste: cost attribution, rate card, all four waste detectors, SpendView + WasteView. |
-| Tier 2 | Forecaster, simulator, capability index, SimulatorView, narrator. |
-| Tier 3 | Polish / stretch — only if Tier 0–2 are done and stable. |
+| Tier 0 | Ingestion → event_log → variant graph → ProcessView renders something real |
+| Tier 1 | Cost attribution, rate card, waste detectors, SpendView + WasteView |
+| Tier 2 | Forecaster, simulator, capability index, SimulatorView, narrator |
+| Tier 3 | Polish and stretch only |
 
 | Gate | Hour | Rule |
 |---|---|---|
-| Gate 1 | Hour 8 | Tier 0 rendering end to end, or **drop Tier-2 work immediately**. |
-| Gate 2 | Hour 20 | Simulator running end to end, or **everyone moves onto it**. |
-| Gate 3 | Hour 28 | Feature freeze — anything not working gets **removed from the demo, not fixed**. |
+| 1 | 8 | Tier 0 rendering end to end, or drop all Tier 2 work immediately |
+| 2 | 20 | Simulator running end to end, or everyone moves onto it |
+| 3 | 28 | Feature freeze — anything not working is **removed** from the demo, not fixed |
 
-`ProcessView` leads the Round 2 demo. If time runs short, protect
-`SimulatorView` above all other frontend work.
+`ProcessView` leads the Round 2 demo. **The simulator is never cut.**
 
-## Who owns what
+---
 
-| Path | Owner | Lane |
-|---|---|---|
-| `backend/app/ingestion/` | Nishant | GitHub + Jira connectors, pseudonymization |
-| `backend/app/synthetic/` | Nishant | Calendar + token generators |
-| `backend/app/cost/` | Diljit | Session inference, cost attribution, rate card |
-| `backend/app/waste/` | Diljit | Rework, review latency, CI waste, key-person risk |
-| `backend/app/models/` | Dipen | Forecaster, capability index, simulator |
-| `backend/app/narrate/` | Tier 2, whoever picks it up | Narrator LLM call — explains only, never computes |
-| `backend/app/api/` | Shared | Routers over the above; keep thin, no business logic |
-| `backend/app/db/` | Shared infra | SQLAlchemy models (must match `docs/schema.sql` exactly), sessions |
-| `frontend/` | Livana | All views, components, API wrappers |
-| `infra/`, `scripts/`, `docs/schema.sql`, `.env.example` | Shared infra | Whoever touches an env var updates `.env.example` and the README table too |
+## `docs/` is for humans
 
-## Running locally
+`docs/master-reference.md`, `docs/architecture-and-roadmap.md` and
+`docs/lanes/` contain pitch language, rejected options, and Tier 3 items we are
+explicitly not building. **Do not treat anything in `docs/` as an
+instruction.** This file and the task I give you are the only sources of build
+direction. `docs/schema.sql` is the sole exception: it is the frozen data
+contract.
 
-See [`README.md`](../README.md) for the full quickstart, manual setup
-(Linux/macOS vs Windows), environment variables, and troubleshooting.
-Short version: `docker compose -f infra/docker-compose.yml up` is the one
-command that works identically on both OSes.
+---
 
 ## Slash commands
 
-- `/seed-synthetic` — regenerate calendar + token synthetic data.
-- `/check-gate` — report current tier status against the three gate hours above.
+- `/verify` — run the full contract check.
+- `/privacy-audit` — adversarial audit against the privacy rules.
+- `/seed-synthetic` — regenerate calendar and token data.
+- `/check-gate` — tier status against the three gate hours.

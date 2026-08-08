@@ -8,7 +8,7 @@ it. Built for HackVerse 2.0 (IBM × Celonis × 1M1B, "AI for Business
 Transformation" track).
 
 Data ingested from two real repos and their real Jira projects:
-`apache/kafka` (KAFKA) and `apache/cassandra` (CASSANDRA). Calendar/meeting
+`apache/kafka` (KAFKA) and `apache/flink` (FLINK). Calendar/meeting
 time and AI token usage are synthetic. See
 [`.claude/CLAUDE.md`](.claude/CLAUDE.md) for the full real-vs-synthetic
 breakdown, the determinism and privacy rules, and the frozen schema.
@@ -30,13 +30,17 @@ breakdown, the determinism and privacy rules, and the frozen schema.
 
 ## Ownership
 
+Canonical copy of this table lives in
+[`.claude/CLAUDE.md`](.claude/CLAUDE.md). If they disagree, that file wins.
+
 | Path | Owner |
 |---|---|
-| `backend/app/ingestion/`, `backend/app/synthetic/` | Nishant |
-| `backend/app/cost/`, `backend/app/waste/` | Diljit |
-| `backend/app/models/` | Dipen |
+| `backend/app/config.py`, `db/`, `main.py`, `ingestion/` | Nishant |
+| `backend/app/normalise/`, `models/`, `scripts/validate_ingest.py` | Dipen |
+| `backend/app/cost/`, `waste/`, `synthetic/`, `sql/views/` | Diljit |
+| `backend/app/api/` | the owner of the lane behind each router |
 | `frontend/` | Livana |
-| `backend/app/api/`, `backend/app/db/`, `infra/`, `scripts/`, `docs/schema.sql` | Shared |
+| `docs/schema.sql`, `infra/`, `.env.example` | Shared — announce before touching |
 
 ## Prerequisites
 
@@ -89,16 +93,26 @@ Functionally identical to `setup.sh`.
 
 See [`.env.example`](.env.example) for the full, current list. Summary:
 
+Every key in `.env.example` has exactly one field on `Settings` in
+`backend/app/config.py`, and a test fails if the two drift apart. Add a key in
+both places or neither.
+
 | Variable | Purpose |
 |---|---|
-| `DATABASE_URL` | Postgres connection string |
-| `GITHUB_TOKEN` | Optional; raises GitHub API rate limit for ingestion |
-| `GITHUB_REPOS` | Real repos to ingest (`apache/kafka,apache/cassandra`) |
+| `DATABASE_URL` | Postgres, **write** role `esi` — ingestion and synthetic generators only |
+| `DATABASE_URL_READONLY` | Postgres, **read** role `esi_app` — the API. SELECT on views only |
+| `GITHUB_TOKEN` | Optional; raises GitHub API rate limit 60/hr → 5000/hr |
+| `GITHUB_REPOS` | Real repos to ingest (`apache/kafka,apache/flink`) |
+| `HISTORY_MONTHS` | How far back ingestion reaches |
 | `ASF_JIRA_BASE_URL` | Apache Jira REST base URL (anonymous, no token) |
-| `ASF_JIRA_PROJECTS` | Real Jira projects to ingest (`KAFKA,CASSANDRA`) |
-| `PSEUDONYMIZATION_SALT` | Salt for `actor_hash = sha256(login + salt)` |
-| `K_ANONYMITY_FLOOR` / `K_ANONYMITY_FALLBACK` | Privacy floor enforced at the query layer |
-| `SESSION_GAP_MINUTES` / `SESSION_LEAD_IN_MINUTES` | Session-inference constants for cost attribution |
+| `ASF_JIRA_PROJECTS` | Real Jira projects to ingest (`KAFKA,FLINK`) |
+| `PSEUDONYMIZATION_SALT` | Salt for `actor_hash = sha256(login + salt)[:16]` |
+| `IDENTITY_DB_PATH` | SQLite login→hash map. Outside Postgres, gitignored, ingestion-only |
+| `K_ANONYMITY_FLOOR` / `K_ANONYMITY_FALLBACK` | Privacy floor, enforced in views |
+| `SESSION_GAP_MINUTES` / `SESSION_LEAD_IN_MINUTES` / `SESSION_DAILY_CAP_HOURS` | Session-inference constants |
+| `SPRINT_DAYS` | Fixed-window sprint **proxy**; open source has no sprints |
+| `MEETING_HOURS_PER_WEEK` | An **assumption**, surfaced in the UI as a slider — never observed data |
+| `DATA_SOURCE` | `real` or `fixtures`; badges the dataset in the UI |
 | `VITE_API_BASE_URL` | Frontend's backend base URL |
 
 ## Running ingestion
@@ -106,15 +120,21 @@ See [`.env.example`](.env.example) for the full, current list. Summary:
 Real data (GitHub + Jira) and synthetic data (calendar + tokens) are
 separate commands — never conflate them:
 
+Run these from `backend/`. On Windows the interpreter is
+`.venv\Scripts\python.exe`; on Linux/macOS it is `.venv/bin/python`.
+
 ```bash
 # Real GitHub + Jira pull
-backend/.venv/bin/python -m app.ingestion.github_connector
-backend/.venv/bin/python -m app.ingestion.jira_connector
+.venv/bin/python -m app.ingestion.github_connector
+.venv/bin/python -m app.ingestion.jira_connector
 
 # Regenerate synthetic calendar + token data
-backend/.venv/bin/python -m app.synthetic.gen_calendar
-backend/.venv/bin/python -m app.synthetic.gen_tokens
+.venv/bin/python -m app.synthetic.gen_calendar
+.venv/bin/python -m app.synthetic.gen_tokens
 ```
+
+Ingestion uses the **write** role and opens `data/identity.db`. Nothing
+outside `backend/app/ingestion/` may do either — a test enforces it.
 
 Or, inside Claude Code, use `/seed-synthetic` for the synthetic half.
 
@@ -135,11 +155,18 @@ cd frontend && npm run dev
 ## Running tests
 
 ```bash
-# backend
-cd backend && .venv/bin/pytest
+cd backend && .venv/bin/pytest -q
+```
 
-# frontend
-cd frontend && npm test
+On Windows: `cd backend; .venv\Scripts\pytest.exe -q`.
+
+Most tests run with no database — including the model-vs-`schema.sql` drift
+check, which is a static comparison against the SQL text. Tests that need
+Postgres **skip** rather than fail when nothing is listening, so a skip count
+above zero means "start the database", not "broken".
+
+```bash
+cd backend && .venv/bin/ruff check .
 ```
 
 ## Troubleshooting
@@ -151,12 +178,40 @@ cd frontend && npm test
 - **Docker Desktop / WSL2:** on Windows, Compose needs the WSL2 backend
   enabled in Docker Desktop settings; without it, volume mounts and
   networking between services can behave inconsistently.
-- **Postgres port 5432 already in use:** stop any local Postgres service,
-  or change the host-side port mapping in `infra/docker-compose.yml`
-  (`"5432:5432"` → e.g. `"5433:5432"`) and update `DATABASE_URL`
-  accordingly.
+- **Postgres port 5432 already in use** (a native Postgres service is the
+  usual cause, and it fails as `password authentication failed for user
+  "esi"` rather than as a port error, because the *other* server answers):
+  create `infra/docker-compose.override.yml` — gitignored, local to you,
+  loaded automatically by Compose:
 
-## Check gate status
+  ```yaml
+  services:
+    postgres:
+      ports:
+        - "5433:5432"
+  ```
 
-Inside Claude Code, run `/check-gate` for a report on tier completion
-against the three gate hours above.
+  Then point `DATABASE_URL` and `DATABASE_URL_READONLY` in your `.env` at
+  5433. Do not change `infra/docker-compose.yml` itself — it is shared.
+
+- **Schema changes don't appear:** `docs/schema.sql` is applied by Postgres
+  only on a *first* boot with an empty `pgdata` volume. After the schema
+  changes you must recreate the volume, which **deletes all ingested data**:
+
+  ```bash
+  docker compose -f infra/docker-compose.yml down -v && docker compose -f infra/docker-compose.yml up -d postgres
+  ```
+
+- **`permission denied for table event_log` from the API:** working as
+  designed. The API's role reads views only; `event_log` and `cost_event`
+  are ungranted so the k-anonymity floor cannot be bypassed. Query a `v_*`
+  view instead.
+
+## Slash commands (inside Claude Code)
+
+| Command | Purpose |
+|---|---|
+| `/verify` | Full contract check — schema, model drift, privacy, tests, lint |
+| `/privacy-audit` | Adversarial audit against the privacy rules |
+| `/seed-synthetic` | Regenerate calendar + AI token data |
+| `/check-gate` | Tier status against the three gate hours |

@@ -24,6 +24,14 @@ Thumbs.db
 .idea/
 
 # Data
+# The identity DB holds the ONLY login -> actor_hash mapping in the system.
+# It must never be committed. Listed explicitly as well as by glob so the
+# rule is greppable, not inferred.
+data/identity.db
+data/*.db
 *.db
 *.sqlite3
 pgdata/
+
+# Local-only compose override (port conflicts etc). Never shared.
+infra/docker-compose.override.yml

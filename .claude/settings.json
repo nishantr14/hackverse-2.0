@@ -1,0 +1,35 @@
+{
+  "_comment": "DESTINATION: .claude/settings.json — THIS COPY IS NISHANT'S. Each teammate commits their own Edit allowlist scoped to their own lane. See the ownership table in .claude/CLAUDE.md.",
+  "permissions": {
+    "allow": [
+      "Bash(git status)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git clone:*)",
+      "Bash(pytest:*)",
+      "Bash(python -m pytest:*)",
+      "Bash(python -m app.:*)",
+      "Bash(python scripts/:*)",
+      "Bash(ruff:*)",
+      "Bash(psql:*)",
+      "Bash(docker compose:*)",
+      "Bash(npm run:*)",
+      "Read(**)",
+      "Edit(backend/app/config.py)",
+      "Edit(backend/app/main.py)",
+      "Edit(backend/app/db/**)",
+      "Edit(backend/app/ingestion/**)",
+      "Edit(backend/tests/**)",
+      "Edit(.env.example)"
+    ],
+    "deny": [
+      "Read(.env)",
+      "Read(data/identity.db)",
+      "Bash(git push:*)",
+      "Bash(rm -rf:*)",
+      "Edit(docs/schema.sql)"
+    ]
+  }
+}
