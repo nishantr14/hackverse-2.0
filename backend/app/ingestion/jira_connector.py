@@ -62,7 +62,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
-from app.db.models import IngestCursor, RawPayload, WorkItem
+from app.db.models import EventLog, IngestCursor, RawPayload
 from app.db.session import write_session
 from app.ingestion.pseudonymize import (
     actor_hash,
@@ -598,12 +598,20 @@ def _fetch_full_changelog(client: JiraClient, key: str, stats: Stats) -> dict[st
 
 def _print_report(project: str, stats: Stats, session: Session) -> None:
     keys = sorted(stats.keys)
+    # "Does this Jira key already have COMMITS against it" — which is the
+    # question worth asking, and no longer the same as "is it in work_item".
+    #
+    # This counted work_item rows when it was written, and reported 100.0%
+    # once the normaliser started creating a work_item for every Jira issue
+    # it lands. The number was measuring its own side effect. An actual commit
+    # event is the only evidence git was ever involved.
     overlap = 0
     if keys:
         overlap = session.execute(
-            select(func.count())
-            .select_from(WorkItem)
-            .where(WorkItem.work_item_id.in_(keys))
+            select(func.count(func.distinct(EventLog.work_item_id))).where(
+                EventLog.work_item_id.in_(keys),
+                EventLog.activity == "commit",
+            )
         ).scalar_one()
     pct = overlap / len(keys) if keys else 0.0
 
@@ -629,7 +637,7 @@ def _print_report(project: str, stats: Stats, session: Session) -> None:
     )
     print("\n  verification")
     print(f"  1. distinct issue keys fetched          {len(keys):,}")
-    print(f"  2. already in work_item from git        {overlap:,}")
+    print(f"  2. also carrying git commits            {overlap:,}")
     print(f"  3. OVERLAP                              {pct:.1%}")
     print(f"  4. status-transition changelog events   {stats.status_transitions:,}")
     print(

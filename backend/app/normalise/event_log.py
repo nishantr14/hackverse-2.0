@@ -46,7 +46,12 @@ from app.config import get_settings
 from app.db.models import Actor, EventLog, RawPayload, RunConfig, WorkItem
 from app.db.session import write_session
 from app.ingestion.git_local import PR_RE, assign_sprints, infer_tenure
-from app.ingestion.projects import PROJECT_TO_REPO, TICKET_ANYWHERE, is_real_ticket
+from app.ingestion.projects import (
+    PROJECT_TO_REPO,
+    TICKET_ANYWHERE,
+    epic_from_text,
+    is_real_ticket,
+)
 from app.ingestion.pseudonymize import assert_no_identity
 from app.normalise.activities import (
     JIRA_STATUS_TO_ACTIVITY,
@@ -298,7 +303,17 @@ def write_events(session: Session, rows: list[dict[str, Any]]) -> int:
         session.execute(
             stmt.on_conflict_do_update(
                 index_elements=["event_id"],
-                set_={"attrs": stmt.excluded.attrs, "ts": stmt.excluded.ts},
+                set_={
+                    "attrs": stmt.excluded.attrs,
+                    "ts": stmt.excluded.ts,
+                    # actor_hash MUST be in here. Without it, correcting who an
+                    # event belongs to silently does nothing on every event
+                    # already mapped — the mergedBy fix updated attrs, left the
+                    # author in place, and only showed up as six merges whose
+                    # actor was null while attrs claimed no reason for it.
+                    "actor_hash": stmt.excluded.actor_hash,
+                    "duration_s": stmt.excluded.duration_s,
+                },
             )
         )
     return len(deduped)
@@ -446,11 +461,16 @@ def map_pull_requests(session: Session, stats: Stats) -> None:
                 "closed_at": parse_ts(node.get("closedAt")),
                 "source_ref": f"{repo}#{number}",
                 "jira_key": case_id if case_source == "ticket_key" else None,
-                # A GitHub milestone is the nearest thing this data has to an
-                # epic: the release or theme a PR was filed under. Without it
-                # work_item.epic is null for every case and the spend treemap
-                # can only break down by repo and component.
-                "epic": (node.get("milestone") or {}).get("title"),
+                # THE MILESTONE IS ALWAYS NULL ON APACHE. Measured: 5,632 PRs,
+                # zero milestones — the projects do not use the feature. So
+                # the epic comes from the improvement proposal the PR cites,
+                # which is a better epic anyway: KIP-1071 is a named body of
+                # work spanning many PRs over months, which is exactly the
+                # unit a spend treemap wants to group by. The milestone stays
+                # as a fallback because it costs nothing and another repo may
+                # actually use it.
+                "epic": epic_from_text(node.get("title"), node.get("body"))
+                or (node.get("milestone") or {}).get("title"),
                 # Component is derived from file paths and git is authoritative
                 # for it — this only fills the gap for the 1,391 PR cases that
                 # have no commit in the clone, where the alternative is null.
