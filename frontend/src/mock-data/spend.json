@@ -1,0 +1,15 @@
+[
+  { "workItem": "PAY-412", "project": "Payments", "component": "checkout-service", "authorHours": 64, "reviewHours": 12, "cost": 620000 },
+  { "workItem": "PAY-398", "project": "Payments", "component": "reconciliation", "authorHours": 40, "reviewHours": 8, "cost": 410000 },
+  { "workItem": "PAY-455", "project": "Payments", "component": "checkout-service", "authorHours": 22, "reviewHours": 6, "cost": 190000 },
+  { "workItem": "DEL-201", "project": "Delta", "component": "notification-engine", "authorHours": 51, "reviewHours": 9, "cost": 480000 },
+  { "workItem": "DEL-244", "project": "Delta", "component": "event-bus", "authorHours": 33, "reviewHours": 7, "cost": 310000 },
+  { "workItem": "DEL-260", "project": "Delta", "component": "notification-engine", "authorHours": 18, "reviewHours": 4, "cost": 140000 },
+  { "workItem": "AUTH-88", "project": "Auth", "component": "session-service", "authorHours": 29, "reviewHours": 6, "cost": 280000 },
+  { "workItem": "AUTH-93", "project": "Auth", "component": "sso-gateway", "authorHours": 25, "reviewHours": 5, "cost": 240000 },
+  { "workItem": "AUTH-101", "project": "Auth", "component": "session-service", "authorHours": 15, "reviewHours": 3, "cost": 160000 },
+  { "workItem": "INT-14", "project": "Internal", "component": "admin-dashboard", "authorHours": 20, "reviewHours": 4, "cost": 190000 },
+  { "workItem": "INT-22", "project": "Internal", "component": "admin-dashboard", "authorHours": 14, "reviewHours": 3, "cost": 130000 },
+  { "workItem": "PLAT-33", "project": "Platform", "component": "ci-pipeline", "authorHours": 12, "reviewHours": 2, "cost": 90000 },
+  { "workItem": "PLAT-41", "project": "Platform", "component": "infra-provisioning", "authorHours": 9, "reviewHours": 2, "cost": 70000 }
+]
