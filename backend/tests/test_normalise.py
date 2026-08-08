@@ -379,22 +379,41 @@ def test_the_app_role_can_read_the_new_views(pg_engine):
 
 def test_rerunning_the_mapper_does_not_duplicate_events(pg_engine):
     """Idempotency, proved rather than asserted. Every event id is a hash of
-    its own evidence, so a second pass must upsert in place."""
+    its own evidence, so a second pass must upsert in place.
+
+    Mapped twice and compared between the two, never against a count taken
+    before the first — an ingestion run in another terminal lands payloads
+    continuously, and comparing across the first pass measures the fetch
+    rather than the mapper. The payload count is re-read either side and the
+    test skips if it moved, so a false pass is not possible either.
+    """
     from app.db.session import write_session
     from app.normalise.event_log import Stats, map_jira, map_pull_requests
 
+    def counts(conn):
+        return (
+            conn.execute(text("SELECT count(*) FROM event_log")).scalar(),
+            conn.execute(text("SELECT count(*) FROM raw_payload")).scalar(),
+        )
+
+    def remap():
+        with write_session() as session:
+            map_pull_requests(session, Stats())
+            map_jira(session, Stats())
+
+    remap()
     with pg_engine.connect() as conn:
-        before = conn.execute(text("SELECT count(*) FROM event_log")).scalar()
-    if not before:
+        events_1, payloads_1 = counts(conn)
+    if not events_1:
         pytest.skip("event log is empty")
 
-    with write_session() as session:
-        map_pull_requests(session, Stats())
-        map_jira(session, Stats())
-
+    remap()
     with pg_engine.connect() as conn:
-        after = conn.execute(text("SELECT count(*) FROM event_log")).scalar()
-    assert after == before
+        events_2, payloads_2 = counts(conn)
+
+    if payloads_2 != payloads_1:
+        pytest.skip("ingestion is landing payloads concurrently")
+    assert events_2 == events_1
 
 
 def test_ci_events_never_outnumber_the_runs_behind_them(conn):
@@ -420,3 +439,27 @@ def test_ci_events_never_outnumber_the_runs_behind_them(conn):
         )
     ).scalar()
     assert orphaned == 0, f"{orphaned} CI events have no surviving run"
+
+
+# --- epic -----------------------------------------------------------------
+
+
+def test_epic_comes_from_the_improvement_proposal():
+    """Apache uses GitHub milestones exactly zero times across 5,632 PRs, so
+    milestone.title populates nothing. A KIP is the real epic: a named body of
+    work spanning many PRs over months."""
+    from app.ingestion.projects import epic_from_text
+
+    assert epic_from_text("KIP-1071: new rebalance protocol") == "KIP-1071"
+    assert epic_from_text("MINOR: tidy", "implements FLIP-187") == "FLIP-187"
+    assert epic_from_text("KAFKA-19871: fix a thing") is None
+
+
+def test_the_epic_and_the_case_id_are_not_the_same_thing():
+    """KIP-1071 must never become a case — is_real_ticket rejects it — but it
+    must become that case's epic. Both, from the same string."""
+    from app.ingestion.projects import epic_from_text, is_real_ticket
+
+    title = "KIP-1071: new rebalance protocol"
+    assert is_real_ticket("KIP-1071", "apache/kafka") is False
+    assert epic_from_text(title) == "KIP-1071"

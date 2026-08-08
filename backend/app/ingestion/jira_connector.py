@@ -62,9 +62,14 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
-from app.db.models import IngestCursor, RawPayload, WorkItem
+from app.db.models import EventLog, IngestCursor, RawPayload
 from app.db.session import write_session
-from app.ingestion.pseudonymize import actor_hash, assert_no_identity, is_bot
+from app.ingestion.pseudonymize import (
+    actor_hash,
+    assert_no_identity,
+    is_bot,
+    warn_if_default_salt,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -119,6 +124,28 @@ USER_OBJECT_KEYS = frozenset(
 #: at all. Scrubbing only user objects would sail straight past this.
 USER_VALUED_FIELDS = frozenset(
     {"assignee", "reporter", "creator", "watcher", "request participants"}
+)
+
+#: Changelog fields whose values we actually model, and therefore keep. Every
+#: one is a closed vocabulary — a status name, a component name, a priority —
+#: so none of them can carry free text a person typed.
+#:
+#: Anything absent from this set keeps its NAME and loses its VALUES. Measured
+#: on KAFKA: `description` fires 423 times and `Comment` 27, each carrying the
+#: full before-and-after text of something a human wrote. That is a lot of
+#: free text to store, model nothing with, and have to defend.
+MODELLED_FIELDS = frozenset(
+    {
+        "status",
+        "resolution",
+        "priority",
+        "issuetype",
+        "component",
+        "fix version",
+        "version",
+        "labels",
+        "sprint",
+    }
 )
 
 #: URL and avatar keys embed the username in a path. Nothing downstream reads
@@ -188,20 +215,41 @@ def scrub_author(author: Any) -> dict[str, Any] | None:
 
 
 def scrub_changelog_item(item: dict[str, Any]) -> dict[str, Any]:
-    """Hash the from/to values of a changelog entry that records a person.
+    """Keep the from/to values of the fields we model. Drop the rest.
 
-    A status transition keeps its `fromString`/`toString` ("Open" -> "Patch
-    Available") because those are the state names the process graph is built
-    from. An assignee transition does not: its from/to are people.
+    Three cases, and the third is the one this got wrong at first.
+
+    A status transition keeps `fromString`/`toString` — "Open" -> "Patch
+    Available" is the state machine the whole product is built on.
+
+    An assignee transition has its values hashed: they are a username and a
+    real display name, in a payload with no user object anywhere in it.
+
+    EVERYTHING ELSE LOSES ITS VALUES ENTIRELY. A `description` change carries
+    the old and new description in full, and on KAFKA-20505 the old one had an
+    email address pasted into it. The identity guard caught it and aborted the
+    run at issue 1,201 of 2,155 — correctly. The fix is not to soften the
+    guard: it is to stop carrying free text we never model. We need status
+    transitions, not description diffs. The field name and the fact that it
+    changed are kept, which is all any downstream query asks for.
     """
     field_name = str(item.get("field") or "").strip().lower()
-    if field_name not in USER_VALUED_FIELDS:
+
+    if field_name in USER_VALUED_FIELDS:
+        out = dict(item)
+        for key in ("from", "to", "fromString", "toString"):
+            value = out.get(key)
+            out[key] = actor_hash(str(value)) if value else value
+        return out
+
+    if field_name in MODELLED_FIELDS:
         return {k: scrub_jira(v) for k, v in item.items()}
-    out = dict(item)
-    for key in ("from", "to", "fromString", "toString"):
-        value = out.get(key)
-        out[key] = actor_hash(str(value)) if value else value
-    return out
+
+    return {
+        "field": item.get("field"),
+        "fieldtype": item.get("fieldtype"),
+        "values_dropped": True,
+    }
 
 
 def scrub_jira(obj: Any) -> Any:
@@ -311,7 +359,18 @@ class JiraClient:
                 raise JiraError(f"404 for {path} — check the project key")
             if response.status_code != 200:
                 raise JiraError(f"HTTP {response.status_code}: {response.text[:300]}")
-            return response.json()
+            try:
+                return response.json()
+            except ValueError as exc:
+                # A 200 whose body stopped mid-string. ASF cuts connections
+                # constantly and a 50-issue page with inline changelogs is a
+                # few hundred KB, so this is the most likely place to meet it.
+                # The status code is 200 and every check above passes.
+                last = JiraError(f"truncated response body: {exc}")
+                self.retries += 1
+                self._backoff(attempt)
+                logger.warning("truncated body on %s, retrying", path)
+                continue
 
         raise JiraError(f"giving up after {MAX_RETRIES} attempts: {last}")
 
@@ -539,12 +598,20 @@ def _fetch_full_changelog(client: JiraClient, key: str, stats: Stats) -> dict[st
 
 def _print_report(project: str, stats: Stats, session: Session) -> None:
     keys = sorted(stats.keys)
+    # "Does this Jira key already have COMMITS against it" — which is the
+    # question worth asking, and no longer the same as "is it in work_item".
+    #
+    # This counted work_item rows when it was written, and reported 100.0%
+    # once the normaliser started creating a work_item for every Jira issue
+    # it lands. The number was measuring its own side effect. An actual commit
+    # event is the only evidence git was ever involved.
     overlap = 0
     if keys:
         overlap = session.execute(
-            select(func.count())
-            .select_from(WorkItem)
-            .where(WorkItem.work_item_id.in_(keys))
+            select(func.count(func.distinct(EventLog.work_item_id))).where(
+                EventLog.work_item_id.in_(keys),
+                EventLog.activity == "commit",
+            )
         ).scalar_one()
     pct = overlap / len(keys) if keys else 0.0
 
@@ -570,7 +637,7 @@ def _print_report(project: str, stats: Stats, session: Session) -> None:
     )
     print("\n  verification")
     print(f"  1. distinct issue keys fetched          {len(keys):,}")
-    print(f"  2. already in work_item from git        {overlap:,}")
+    print(f"  2. also carrying git commits            {overlap:,}")
     print(f"  3. OVERLAP                              {pct:.1%}")
     print(f"  4. status-transition changelog events   {stats.status_transitions:,}")
     print(
@@ -592,6 +659,7 @@ def _print_report(project: str, stats: Stats, session: Session) -> None:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    warn_if_default_salt()
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     settings = get_settings()
 

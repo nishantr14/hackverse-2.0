@@ -21,6 +21,29 @@ REPO_TO_PROJECT: dict[str, str] = {v: k for k, v in PROJECT_TO_REPO.items()}
 TICKET_ANYWHERE = re.compile(r"(?<![A-Za-z0-9])([A-Z]{2,10}-\d+)(?![0-9])")
 
 
+#: Improvement proposals. NOT issues — which is why `is_real_ticket` rejects
+#: them as case ids — but they ARE epics, and a better one than the field the
+#: plan assumed.
+#:
+#: Measured on 5,632 apache PRs: GitHub milestones are used ZERO times, so
+#: `milestone.title` populates nothing. KIP-1071 and FLIP-187 appear on 546 of
+#: them, and a KIP is exactly what an epic is meant to be — a named body of
+#: work spanning many pull requests over months, which is the unit a spend
+#: treemap wants to group by. Jira parent keys cover a further 415 issues.
+EPIC_RE = re.compile(r"(?<![A-Za-z0-9])((?:KIP|FLIP)-\d+)")
+
+
+def epic_from_text(*texts: str | None) -> str | None:
+    """First improvement-proposal reference, most reliable field first."""
+    for text in texts:
+        if not isinstance(text, str):
+            continue
+        match = EPIC_RE.search(text)
+        if match:
+            return match.group(1)
+    return None
+
+
 def is_real_ticket(key: str, repo: str) -> bool:
     """Is this UPPER-123 string actually a Jira issue in this repo's project?
 

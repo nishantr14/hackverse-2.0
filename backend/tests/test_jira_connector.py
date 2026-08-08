@@ -21,6 +21,7 @@ from app.ingestion.jira_connector import (
     _parse_jira_ts,
     assert_no_jira_identity,
     scrub_author,
+    scrub_changelog_item,
     scrub_jira,
 )
 
@@ -312,3 +313,87 @@ def test_updated_is_requested_so_change_detection_is_possible():
 def test_page_size_is_below_the_size_asf_refuses():
     """100 issues with inline changelogs was refused by the live instance."""
     assert DEFAULT_PAGE_SIZE <= 50
+
+
+def test_free_text_field_values_are_dropped_not_stored():
+    """THE ONE THAT ABORTED A 2,155-ISSUE RUN.
+
+    A `description` change carries the whole old and new description. On
+    KAFKA-20505 the old one had an email address pasted into it, the identity
+    guard fired, and the run died at issue 1,201. We model status transitions,
+    not description diffs — so the values go and the field name stays.
+    """
+    item = {
+        "field": "description",
+        "fieldtype": "jira",
+        "fromString": "ping someone@apache.org about this",
+        "toString": "no longer relevant",
+    }
+    out = scrub_changelog_item(item)
+    assert out["field"] == "description"
+    assert out["values_dropped"] is True
+    assert "fromString" not in out
+    assert_no_jira_identity(out)
+
+
+def test_modelled_field_values_survive():
+    for field, value in (
+        ("status", "Patch Available"),
+        ("resolution", "Fixed"),
+        ("priority", "Major"),
+        ("Component", "core"),
+    ):
+        out = scrub_changelog_item(
+            {"field": field, "fieldtype": "jira", "toString": value}
+        )
+        assert out["toString"] == value, f"{field} lost its vocabulary"
+
+
+def test_a_description_full_of_identity_cannot_reach_postgres():
+    """End to end: the whole issue, not just the one item."""
+    body = issue()
+    body["changelog"]["histories"].append(
+        {
+            "id": "3",
+            "created": "2026-01-01T09:00:00.000+0000",
+            "author": user_object("jsmith"),
+            "items": [
+                {
+                    "field": "description",
+                    "fieldtype": "jira",
+                    "fromString": "contact ada@apache.org or J Smith",
+                    "toString": "see jsmith",
+                }
+            ],
+        }
+    )
+    scrubbed = scrub_jira(body)
+    assert_no_jira_identity(scrubbed)
+    blob = json.dumps(scrubbed)
+    for leak in ("ada@apache.org", "J Smith", "jsmith"):
+        assert leak not in blob
+
+
+def test_a_truncated_response_body_is_retried():
+    """ASF cuts connections mid-page and a 50-issue page with inline
+    changelogs is a few hundred KB. The status code is still 200."""
+    calls = {"n": 0}
+
+    def handler(request):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return httpx.Response(
+                200,
+                headers={"content-type": "application/json"},
+                content=b'{"total": 2155, "issues": [{"key": "KAFK',
+            )
+        return httpx.Response(200, json={"total": 0, "issues": []})
+
+    client = JiraClient(
+        "https://jira.example",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        sleep=FakeClock().sleep,
+    )
+    client.get("/rest/api/2/search", {})
+    assert calls["n"] == 2
+    assert client.retries == 1

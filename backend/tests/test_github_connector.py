@@ -937,3 +937,112 @@ def test_workflow_name_is_stored_under_an_unambiguous_key():
     kept = keep_run_fields(run_node())
     assert "name" not in kept
     _assert_scrubbed(kept)
+
+
+# --- labels, milestone, mergedBy -----------------------------------------
+
+
+def test_labels_become_plain_strings_so_no_name_key_survives():
+    """A GitHub label is {"name": "core"} and a person is {"name": "Ada"}.
+    The guard cannot tell them apart, so the shape is removed rather than the
+    guard weakened — same fix as workflow_name in the Actions projection."""
+    from app.ingestion.github_connector import flatten_labels
+
+    labels = flatten_labels({"nodes": [{"name": "core"}, {"name": "streams"}]})
+    assert labels == ["core", "streams"]
+    _assert_scrubbed({"labels": labels})
+
+
+def test_a_pr_with_labels_and_a_milestone_passes_the_guard():
+    """This is the regression that kept work_item.epic permanently null."""
+    node = pr_node()
+    node["labels"] = {"nodes": [{"name": "core"}, {"name": "KIP"}]}
+    node["milestone"] = {"title": "4.0.0", "number": 12}
+    body = scrub_payload(node)
+    _assert_scrubbed(body)
+    assert body["labels"] == ["core", "KIP"]
+    assert body["milestone"]["title"] == "4.0.0"
+
+
+@pytest.mark.parametrize("field", ["milestone", "labels", "mergedBy"])
+def test_the_query_asks_for_the_fields_epic_and_attribution_need(field):
+    """work_item.epic stays null forever if the query never asks for the
+    milestone, and a merge has no actor if it never asks who merged it."""
+    assert field in PR_QUERY, f"PR_QUERY is missing {field}"
+
+
+def test_every_bounded_connection_in_the_query_has_a_page_size():
+    """GitHub rejects any unbounded connection outright, and the error does
+    not name the offending one — labels was the newest way to trip this."""
+    import re
+
+    for connection in re.findall(r"(\w+)\(([^)]*)\)", PR_QUERY):
+        name, args = connection
+        if name in ("pullRequests", "files", "reviews", "timelineItems", "labels"):
+            assert "first:" in args, f"{name} has no page size"
+
+
+def test_merged_by_is_scrubbed_like_any_other_actor():
+    node = pr_node()
+    node["mergedBy"] = {"login": "committer1", "__typename": "User"}
+    body = scrub_payload(node)
+    _assert_scrubbed(body)
+    assert body["mergedBy"]["actor_hash"]
+    assert "committer1" not in json.dumps(body)
+
+
+def test_a_label_literally_named_like_a_person_still_cannot_leak_a_key():
+    """Even a hostile label name is only ever a string in a list."""
+    from app.ingestion.github_connector import flatten_labels
+
+    _assert_scrubbed({"labels": flatten_labels({"nodes": [{"name": "Ada Lovelace"}]})})
+
+
+def test_a_truncated_response_body_is_retried():
+    """A 200 whose body stopped mid-string. Every status-code check passes and
+    only the JSON parser notices — this killed a PR re-fetch 40 minutes in."""
+    calls = {"n": 0}
+
+    def handler(request):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return httpx.Response(
+                200,
+                headers={"content-type": "application/json"},
+                content=b'{"data": {"repository": {"pullReq',
+            )
+        return httpx.Response(200, json=graphql_page([]))
+
+    make_client(handler).execute(PR_QUERY, {})
+    assert calls["n"] == 2, "the truncated page was not retried"
+
+
+def test_a_page_that_never_arrives_whole_halves_the_page_size(clean_github_rows):
+    """Retrying a body GitHub cannot stream is useless — all six attempts fail
+    on the same cursor. Adding milestone, labels and mergedBy pushed a 100-PR
+    page over that line. The fix is a smaller page, not more attempts."""
+    seen_sizes = []
+
+    def handler(request):
+        size = json.loads(request.content)["variables"]["pageSize"]
+        seen_sizes.append(size)
+        if size > 50:
+            raise httpx.ReadError("peer closed connection without sending "
+                                  "complete message body (incomplete chunked read)")
+        return httpx.Response(200, json=graphql_page([pr_node(1)]))
+
+    stats = _fetch(handler)
+    assert stats.page_size_reductions >= 1
+    assert seen_sizes[-1] <= 50, "page size was never reduced"
+    assert stats.pull_requests == 1, "the page was not re-fetched after halving"
+
+
+def test_page_size_reduction_stops_at_the_floor(clean_github_rows):
+    """Below the floor the page size is not the problem, and halving again
+    only burns requests against the rate limit."""
+
+    def handler(request):
+        raise httpx.ReadError("incomplete chunked read")
+
+    with pytest.raises(GitHubError):
+        _fetch(handler)

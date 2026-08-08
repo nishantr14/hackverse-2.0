@@ -76,7 +76,12 @@ from sqlalchemy.orm import Session
 from app.config import get_settings
 from app.db.models import CiRun, EventLog, IngestCursor, RawPayload, RunConfig
 from app.db.session import write_session
-from app.ingestion.pseudonymize import actor_hash, assert_no_identity, is_bot
+from app.ingestion.pseudonymize import (
+    actor_hash,
+    assert_no_identity,
+    is_bot,
+    warn_if_default_salt,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -129,6 +134,25 @@ MAX_RETRIES = 6
 #: endpoint repeats rather than erroring, so we stop deliberately.
 REST_PAGINATION_CAP = 1000
 
+#: Floor for the adaptive page-size reduction in fetch_repo. Below this the
+#: problem is not the page size and halving again only wastes requests.
+MIN_PAGE_SIZE = 10
+
+#: httpx phrasings for "the body stopped early". A 200 with half a body is a
+#: transport failure wearing a success code, and none of the status-code
+#: checks can see it.
+TRUNCATION_MARKERS = (
+    "incomplete chunked read",
+    "without sending complete message body",
+    "truncated response body",
+    "peer closed connection",
+)
+
+
+def _is_truncation(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return any(marker in message for marker in TRUNCATION_MARKERS)
+
 PR_QUERY = """
 query PullRequests($owner: String!, $name: String!, $cursor: String, $pageSize: Int!) {
   rateLimit { limit cost remaining resetAt nodeCount }
@@ -154,6 +178,9 @@ query PullRequests($owner: String!, $name: String!, $cursor: String, $pageSize: 
         deletions
         mergeCommit { oid }
         author { login __typename }
+        mergedBy { login __typename }
+        milestone { title number }
+        labels(first: 20) { nodes { name } }
         files(first: 100) { nodes { path } }
         reviews(first: 20) {
           nodes { state submittedAt author { login __typename } }
@@ -229,6 +256,7 @@ class Stats:
     remaining: int = 0
     stopped_on_window: bool = False
     content_outside_window: int = 0
+    page_size_reductions: int = 0
 
 
 @dataclass
@@ -449,6 +477,30 @@ def scrub_actor(node: Any) -> Any:
 TEXT_FIELDS = frozenset({"title", "body", "headRefName"})
 
 
+def flatten_labels(node: Any) -> list[str]:
+    """`{nodes: [{name: "core"}]}` -> `["core"]`.
+
+    A GitHub label is `{"name": "core"}` and a person is `{"name": "Ada
+    Lovelace"}`. The guard cannot tell them apart from the key alone, and a
+    guard that has to guess is not a guard — so rather than teaching it to
+    distinguish two identical shapes by context, the shape is removed: a label
+    set becomes a list of plain strings and no `name` key reaches Postgres.
+
+    Same move as `workflow_name` in the Actions projection, and for the same
+    reason. `name` is exactly what a person's name arrives under, so the day
+    that key is allowed through anywhere is the day it gets through everywhere.
+    """
+    if isinstance(node, dict):
+        node = node.get("nodes") or []
+    if not isinstance(node, list):
+        return []
+    return [
+        label["name"]
+        for label in node
+        if isinstance(label, dict) and isinstance(label.get("name"), str)
+    ]
+
+
 def scrub_payload(obj: Any, known_logins: Iterable[str] | None = None) -> Any:
     """Walk the response, hash every login, and redact identity from free text.
 
@@ -462,7 +514,9 @@ def scrub_payload(obj: Any, known_logins: Iterable[str] | None = None) -> Any:
             return scrub_actor(obj)
         out: dict[str, Any] = {}
         for key, value in obj.items():
-            if key in TEXT_FIELDS:
+            if key == "labels":
+                out[key] = flatten_labels(value)
+            elif key in TEXT_FIELDS:
                 out[key] = redact_text(value, known_logins)
             else:
                 out[key] = scrub_payload(value, known_logins)
@@ -555,7 +609,21 @@ class GitHubClient:
             if response.status_code != 200:
                 raise GitHubError(f"HTTP {response.status_code}: {response.text[:300]}")
 
-            payload = response.json()
+            try:
+                payload = response.json()
+            except ValueError as exc:
+                # A 200 whose body stopped mid-string. GitHub cut the
+                # connection partway through a 219 KB page and httpx handed
+                # back what had arrived; only the JSON parser noticed. Every
+                # status-code check above passed, so without this the run dies
+                # 40 minutes in with a JSONDecodeError and no retry — the same
+                # shape of bug as the ASF connection resets, where the
+                # documented failure mode was not the real one.
+                last_error = GitHubError(f"truncated response body: {exc}")
+                logger.warning("truncated response body, retrying")
+                self.limiter.backoff(attempt)
+                continue
+
             if payload.get("errors"):
                 types = {
                     e.get("type") for e in payload["errors"] if isinstance(e, dict)
@@ -713,15 +781,39 @@ def fetch_repo(
 
     stats = Stats()
     while True:
-        data = client.execute(
-            PR_QUERY,
-            {
-                "owner": owner,
-                "name": name,
-                "cursor": cursor,
-                "pageSize": page_size,
-            },
-        )
+        try:
+            data = client.execute(
+                PR_QUERY,
+                {
+                    "owner": owner,
+                    "name": name,
+                    "cursor": cursor,
+                    "pageSize": page_size,
+                },
+            )
+        except GitHubError as exc:
+            # THE PAGE IS TOO BIG, NOT THE NETWORK TOO FLAKY.
+            #
+            # Adding milestone, labels and mergedBy pushed the per-page cost
+            # from 3 points to 4 and the response over whatever GitHub is
+            # willing to stream: it answers 200, starts a chunked body, and
+            # cuts it partway through. Retrying is useless — all six attempts
+            # failed on the same cursor, every time.
+            #
+            # 100 PRs x (100 files + 20 reviews + 30 timeline items + 20
+            # labels) is simply a lot of JSON. Halving the page and re-asking
+            # from the SAME cursor costs one wasted request and gets a body
+            # that arrives whole. Same lesson as ASF refusing maxResults=100.
+            if not _is_truncation(exc) or page_size <= MIN_PAGE_SIZE:
+                raise
+            page_size = max(MIN_PAGE_SIZE, page_size // 2)
+            stats.page_size_reductions += 1
+            logger.warning(
+                "response body kept arriving incomplete; halving page size to "
+                "%d and retrying the same cursor",
+                page_size,
+            )
+            continue
         rate = RateLimit.from_payload(data.get("rateLimit"))
         stats.points_spent += rate.cost
         stats.remaining = rate.remaining
@@ -783,6 +875,7 @@ def _print_report(repo: str, stats: Stats) -> None:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    warn_if_default_salt()
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     settings = get_settings()
 
@@ -884,8 +977,16 @@ def _rest_get(
         if response.status_code != 200:
             raise GitHubError(f"HTTP {response.status_code}: {response.text[:300]}")
 
+        try:
+            payload = response.json()
+        except ValueError as exc:  # truncated body; see execute()
+            last_error = GitHubError(f"truncated response body: {exc}")
+            logger.warning("truncated REST body, retrying")
+            client.limiter.backoff(attempt)
+            continue
+
         client.limiter.after_rest_response(response.headers)
-        return response.json(), response.headers
+        return payload, response.headers
 
     raise GitHubError(f"giving up after {MAX_RETRIES} attempts: {last_error}")
 
