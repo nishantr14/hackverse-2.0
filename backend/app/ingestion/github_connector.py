@@ -1,13 +1,36 @@
 """
-GitHub GraphQL connector — FETCH ONLY.
+GitHub connector — pull requests (GraphQL) and Actions runs (REST).
 Owner: Nishant (ingestion lane).
 Phase: Tier 0.
 
     python -m app.ingestion.github_connector --repo apache/kafka
+    python -m app.ingestion.github_connector --repo apache/kafka --actions
+    python -m app.ingestion.github_connector --repo apache/kafka --prs --actions
 
-Writes to `raw_payload` and `ingest_cursor`. Nothing else. No `event_log`, no
-`actor`, no `work_item` — Dipen owns the mapping in `normalise/`, and this
-module deliberately has no import that would let it write those tables.
+Writes `raw_payload`, `ingest_cursor`, `ci_run` and one `run_config` row.
+
+PRs remain fetch-only: they land in `raw_payload` and Dipen maps them in
+`normalise/`. Actions runs are the exception — `ci_run` is a landing table with
+no interpretation in it (a run id, a sha, a duration, an attempt number), and
+its only derived field is a join to `work_item` on `head_sha`. There is still
+no `event_log`, `actor` or `work_item` write anywhere in this module.
+
+ACTIONS USES REST, NOT GRAPHQL
+------------------------------
+Workflow runs are not exposed in GitHub's GraphQL schema at all, so this half
+is REST. That means a different budget: 5,000 REQUESTS/hour, tracked with
+`x-ratelimit-remaining` response headers, not the GraphQL point pool. The two
+share GitHub's concurrency and abuse limits, so they run sequentially.
+
+WALL CLOCK, NOT BILLABLE MINUTES
+--------------------------------
+`GET /actions/runs/{id}/timing` returns real billable minutes, but it is one
+request per run — tens of thousands of requests, the entire budget, for a
+number we can approximate. We use `updated_at - run_started_at` instead and
+record `ci_duration_basis = wall_clock` in `run_config` so the disclosure is in
+the data rather than in someone's memory of a conversation. Wall clock
+OVERSTATES cost for queued runs and understates it for parallel jobs; say so
+on the slide.
 
 WHY GRAPHQL
 -----------
@@ -42,7 +65,7 @@ import time
 from collections import deque
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 import httpx
@@ -51,7 +74,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
-from app.db.models import IngestCursor, RawPayload
+from app.db.models import CiRun, EventLog, IngestCursor, RawPayload, RunConfig
 from app.db.session import write_session
 from app.ingestion.pseudonymize import actor_hash, assert_no_identity, is_bot
 
@@ -60,6 +83,33 @@ logger = logging.getLogger(__name__)
 SOURCE = "github_graphql"
 ENTITY_TYPE = "pull_request"
 API_URL = "https://api.github.com/graphql"
+
+ACTIONS_SOURCE = "github_actions"
+ACTIONS_ENTITY_TYPE = "workflow_run"
+REST_BASE = "https://api.github.com"
+
+#: Fields kept from a workflow run. Everything else is discarded at the
+#: boundary rather than stored and ignored — including head_commit, which
+#: carries an author name and email.
+RUN_FIELDS = (
+    "id",
+    "head_sha",
+    "conclusion",
+    "run_started_at",
+    "updated_at",
+    "run_attempt",
+    "name",
+)
+
+#: run_attempt > 1 is a rerun, and reruns are the CI waste signal.
+#: Recorded in run_config so the basis of every CI cost figure is IN THE DATA,
+#: not in someone's memory of a conversation.
+CI_DURATION_BASIS = "wall_clock"
+CI_DURATION_NOTE = (
+    "updated_at - run_started_at, NOT billable minutes. The per-run timing "
+    "endpoint costs one request per run and would exhaust the REST budget. "
+    "Wall clock overstates queued runs and understates parallel jobs."
+)
 
 #: Every GraphQL connection must be bounded 1..100. GitHub rejects the request
 #: outright otherwise, and the error does not name the offending connection.
@@ -74,6 +124,10 @@ PRIMARY_FLOOR = 50
 #: floor on request spacing is the only lever we have against it.
 MIN_REQUEST_INTERVAL_S = 0.75
 MAX_RETRIES = 6
+
+#: GitHub stops paginating actions/runs past this many results. Past it the
+#: endpoint repeats rather than erroring, so we stop deliberately.
+REST_PAGINATION_CAP = 1000
 
 PR_QUERY = """
 query PullRequests($owner: String!, $name: String!, $cursor: String, $pageSize: Int!) {
@@ -177,6 +231,23 @@ class Stats:
     content_outside_window: int = 0
 
 
+@dataclass
+class ActionsStats:
+    pages: int = 0
+    requests: int = 0
+    runs: int = 0
+    total_count: int = 0
+    mapped: int = 0
+    reruns: int = 0
+    failures: int = 0
+    total_minutes: float = 0.0
+    rerun_minutes: float = 0.0
+    remaining: int = 0
+    reported_total: int = 0
+    unreachable: int = 0
+    hit_pagination_cap: bool = False
+
+
 # ---------------------------------------------------------------------
 # Rate limiting
 # ---------------------------------------------------------------------
@@ -253,6 +324,28 @@ class RateLimiter:
                 rate_limit.remaining,
                 wait,
                 rate_limit.reset_at,
+            )
+            self._sleep(wait)
+
+    def after_rest_response(self, headers) -> None:
+        """REST reports its budget in headers, not in the response body.
+
+        It is a different pool from GraphQL — 5,000 REQUESTS per hour rather
+        than 5,000 points — so it is tracked separately and never mixed into
+        the point window.
+        """
+        remaining = headers.get("x-ratelimit-remaining")
+        reset = headers.get("x-ratelimit-reset")
+        if remaining is None:
+            return
+        remaining = int(remaining)
+        logger.info("REST rateLimit: remaining=%s", remaining)
+        if remaining <= self.primary_floor and reset:
+            wait = max(0.0, float(reset) - time.time()) + 1.0
+            logger.warning(
+                "REST budget nearly exhausted (%d left), sleeping %.0fs",
+                remaining,
+                wait,
             )
             self._sleep(wait)
 
@@ -399,7 +492,7 @@ def _assert_scrubbed(obj: Any, path: str = "$") -> None:
 # ---------------------------------------------------------------------
 
 
-class GitHubGraphQL:
+class GitHubClient:
     """Thin GraphQL client with retry, backoff and budget awareness."""
 
     def __init__(
@@ -479,6 +572,12 @@ class GitHubGraphQL:
             return payload["data"]
 
         raise GitHubError(f"giving up after {MAX_RETRIES} attempts: {last_error}")
+
+    @property
+    def http(self) -> httpx.Client:
+        """The underlying client, shared by the GraphQL and REST paths so both
+        go through one connection pool and one set of auth headers."""
+        return self._client
 
     def close(self) -> None:
         self._client.close()
@@ -593,7 +692,7 @@ def _write_page(session: Session, repo: str, nodes: list[dict[str, Any]]) -> int
 
 def fetch_repo(
     repo: str,
-    client: GitHubGraphQL,
+    client: GitHubClient,
     session: Session,
     page_size: int = MAX_PAGE_SIZE,
     max_pages: int | None = None,
@@ -696,37 +795,414 @@ def main(argv: Sequence[str] | None = None) -> int:
         action="store_true",
         help="ignore any stored cursor and start from the newest PR",
     )
+    parser.add_argument("--prs", action="store_true", help="fetch pull requests")
+    parser.add_argument("--actions", action="store_true", help="fetch Actions runs")
     args = parser.parse_args(argv)
     repos = args.repo or settings.github_repo_list
+    # Neither flag means both, so the bare command still does the whole job.
+    do_prs = args.prs or not args.actions
+    do_actions = args.actions or not args.prs
 
     try:
-        client = GitHubGraphQL(settings.github_token)
+        client = GitHubClient(settings.github_token)
     except MissingToken as exc:
         print(f"\nERROR: {exc}\n", file=sys.stderr)
         return 2
 
+    pr_results: list[tuple[str, Stats]] = []
+    action_results: list[tuple[str, ActionsStats]] = []
     try:
         with write_session() as session:
-            results = [
-                (
-                    repo,
-                    fetch_repo(
-                        repo,
-                        client,
-                        session,
-                        page_size=args.page_size,
-                        max_pages=args.max_pages,
-                        resume=not args.reset_cursor,
-                    ),
-                )
-                for repo in repos
-            ]
+            # Sequential, never concurrent: the GraphQL and REST budgets are
+            # separate pools but GitHub's concurrency and abuse limits are not.
+            for repo in repos:
+                if do_prs:
+                    pr_results.append(
+                        (
+                            repo,
+                            fetch_repo(
+                                repo,
+                                client,
+                                session,
+                                page_size=args.page_size,
+                                max_pages=args.max_pages,
+                                resume=not args.reset_cursor,
+                            ),
+                        )
+                    )
+                if do_actions:
+                    action_results.append(
+                        (
+                            repo,
+                            fetch_actions_runs(
+                                repo,
+                                client,
+                                session,
+                                page_size=args.page_size,
+                                max_pages=args.max_pages,
+                            ),
+                        )
+                    )
     finally:
         client.close()
 
-    for repo, stats in results:
+    for repo, stats in pr_results:
         _print_report(repo, stats)
+    for repo, astats in action_results:
+        _print_actions_report(repo, astats)
     return 0
+
+
+# ---------------------------------------------------------------------
+# Actions runs (REST)
+# ---------------------------------------------------------------------
+
+
+def _rest_get(
+    client: GitHubClient, path: str, params: dict[str, Any]
+) -> tuple[dict[str, Any], httpx.Headers]:
+    """One REST GET with the same retry, backoff and spacing as GraphQL."""
+    last_error: Exception | None = None
+    for attempt in range(MAX_RETRIES):
+        client.limiter.before_request()
+        try:
+            response = client.http.get(f"{REST_BASE}{path}", params=params)
+        except httpx.RequestError as exc:
+            last_error = exc
+            client.limiter.backoff(attempt)
+            continue
+
+        if response.status_code in (403, 429):
+            retry_after = response.headers.get("retry-after")
+            client.limiter.backoff(attempt, float(retry_after) if retry_after else None)
+            last_error = GitHubError(f"HTTP {response.status_code}")
+            continue
+        if response.status_code >= 500:
+            last_error = GitHubError(f"HTTP {response.status_code}")
+            client.limiter.backoff(attempt)
+            continue
+        if response.status_code != 200:
+            raise GitHubError(f"HTTP {response.status_code}: {response.text[:300]}")
+
+        client.limiter.after_rest_response(response.headers)
+        return response.json(), response.headers
+
+    raise GitHubError(f"giving up after {MAX_RETRIES} attempts: {last_error}")
+
+
+def keep_run_fields(run: dict[str, Any]) -> dict[str, Any]:
+    """Project a workflow run down to the fields we actually use.
+
+    A run response is large and carries the full repository object, the
+    triggering actor, and `head_commit` with an author NAME and EMAIL. None of
+    that is needed, and one field of it is identity, so this projection is a
+    privacy decision as much as a size one.
+    """
+    kept = {key: run.get(key) for key in RUN_FIELDS}
+    # Stored as `workflow_name`, not `name`. A workflow name ("CI",
+    # "build-and-test") is not identity, but `_assert_scrubbed` rejects any key
+    # called `name` and it is right to — a bare `name` key is exactly what a
+    # person's name arrives under. Renaming the safe one keeps the guard strict
+    # instead of teaching it an exception it would later apply too broadly.
+    kept["workflow_name"] = kept.pop("name", None)
+    return kept
+
+
+def wall_clock_minutes(run: dict[str, Any]) -> float:
+    """Duration proxy. See CI_DURATION_NOTE for what this is and is not."""
+    started, updated = run.get("run_started_at"), run.get("updated_at")
+    if not started or not updated:
+        return 0.0
+    delta = datetime.fromisoformat(updated) - datetime.fromisoformat(started)
+    return max(0.0, delta.total_seconds() / 60.0)
+
+
+def record_ci_duration_basis(session: Session) -> None:
+    """Put the disclosure in the database, not in a slide footnote."""
+    stmt = insert(RunConfig).values(
+        key="ci_duration_basis", value=CI_DURATION_BASIS, note=CI_DURATION_NOTE
+    )
+    session.execute(
+        stmt.on_conflict_do_update(
+            index_elements=["key"],
+            set_={"value": stmt.excluded.value, "note": stmt.excluded.note},
+        )
+    )
+
+
+def sha_to_work_item(session: Session) -> dict[str, str]:
+    """Map every known commit sha to its case.
+
+    Built from `event_log.attrs->>'sha'` rather than `work_item.source_ref`:
+    source_ref holds one sha per case, but a case has many commits and a CI run
+    can be triggered by any one of them.
+    """
+    rows = session.execute(
+        select(EventLog.attrs["sha"].astext, EventLog.work_item_id).where(
+            EventLog.activity == "commit"
+        )
+    ).all()
+    return {sha: work_item_id for sha, work_item_id in rows if sha}
+
+
+def _write_runs(
+    session: Session,
+    repo: str,
+    runs: list[dict[str, Any]],
+    sha_map: dict[str, str],
+    stats: ActionsStats,
+) -> int:
+    raw_rows: list[dict[str, Any]] = []
+    ci_rows: list[dict[str, Any]] = []
+    for run in runs:
+        run_id = str(run.get("id"))
+        head_sha = run.get("head_sha")
+        work_item_id = sha_map.get(head_sha) if head_sha else None
+        attempt = int(run.get("run_attempt") or 1)
+        minutes = wall_clock_minutes(run)
+
+        if work_item_id:
+            stats.mapped += 1
+        if attempt > 1:
+            stats.reruns += 1
+            stats.rerun_minutes += minutes
+        if run.get("conclusion") == "failure":
+            stats.failures += 1
+        stats.total_minutes += minutes
+
+        raw_rows.append(
+            {
+                "source": ACTIONS_SOURCE,
+                "entity_type": ACTIONS_ENTITY_TYPE,
+                "entity_id": f"{repo}#{run_id}",
+                "body": {**run, "repo": repo},
+            }
+        )
+        ci_rows.append(
+            {
+                "run_id": f"{repo}#{run_id}",
+                "work_item_id": work_item_id,
+                "repo": repo,
+                "head_sha": head_sha,
+                "ts": datetime.fromisoformat(run["run_started_at"])
+                if run.get("run_started_at")
+                else datetime.now(UTC),
+                "runner_minutes": round(minutes, 3),
+                "conclusion": run.get("conclusion"),
+                "attempt": attempt,
+            }
+        )
+
+    if not raw_rows:
+        return 0
+
+    assert_no_identity(raw_rows)
+    for row in raw_rows:
+        _assert_scrubbed(row["body"])
+    raw_stmt = insert(RawPayload).values(raw_rows)
+    session.execute(
+        raw_stmt.on_conflict_do_update(
+            index_elements=["source", "entity_type", "entity_id"],
+            set_={"body": raw_stmt.excluded.body, "fetched_at": datetime.now(UTC)},
+        )
+    )
+
+    assert_no_identity(ci_rows)
+    ci_stmt = insert(CiRun).values(ci_rows)
+    session.execute(
+        ci_stmt.on_conflict_do_update(
+            index_elements=["run_id"],
+            set_={
+                "work_item_id": ci_stmt.excluded.work_item_id,
+                "runner_minutes": ci_stmt.excluded.runner_minutes,
+                "conclusion": ci_stmt.excluded.conclusion,
+                "attempt": ci_stmt.excluded.attempt,
+            },
+        )
+    )
+    return len(ci_rows)
+
+
+def _fetch_window(
+    client: GitHubClient,
+    session: Session,
+    repo: str,
+    owner: str,
+    name: str,
+    since: date,
+    until: date,
+    sha_map: dict[str, str],
+    stats: ActionsStats,
+    page_size: int,
+) -> None:
+    """Fetch one date window, bisecting it if GitHub cannot paginate it all.
+
+    THE 1,000-RESULT CAP IS THE WHOLE REASON THIS IS RECURSIVE.
+
+    `GET /actions/runs` reports `total_count` honestly — 103,888 for apache/kafka
+    over 12 months — but refuses to paginate past 1,000 results. A flat pager
+    therefore collects the most recent 1% and silently calls it the year. Every
+    per-sprint CI cost computed from that would be wrong, and wrong in a way
+    that looks fine: the rows are real, there are just almost none of them for
+    any sprint older than a fortnight.
+
+    So each window asks for its own `total_count` first. Under the cap, page it
+    normally. Over the cap, split the window in half and recurse — each half
+    gets its own fresh 1,000 allowance. Windows are only split where the data
+    is actually dense, so quiet weeks still cost one request.
+    """
+    payload, headers = _rest_get(
+        client,
+        f"/repos/{owner}/{name}/actions/runs",
+        {
+            "per_page": page_size,
+            "page": 1,
+            "created": f"{since.isoformat()}..{until.isoformat()}",
+        },
+    )
+    stats.requests += 1
+    stats.remaining = int(headers.get("x-ratelimit-remaining") or 0)
+    total = int(payload.get("total_count") or 0)
+    stats.reported_total += total
+
+    if total > REST_PAGINATION_CAP and since < until:
+        midpoint = since + (until - since) / 2
+        _fetch_window(
+            client,
+            session,
+            repo,
+            owner,
+            name,
+            since,
+            midpoint,
+            sha_map,
+            stats,
+            page_size,
+        )
+        _fetch_window(
+            client,
+            session,
+            repo,
+            owner,
+            name,
+            midpoint + timedelta(days=1),
+            until,
+            sha_map,
+            stats,
+            page_size,
+        )
+        return
+
+    if total > REST_PAGINATION_CAP:
+        # A single day with more than 1,000 runs cannot be split further.
+        logger.warning(
+            "%s %s has %d runs in one day; only %d are reachable",
+            repo,
+            since.isoformat(),
+            total,
+            REST_PAGINATION_CAP,
+        )
+        stats.unreachable += total - REST_PAGINATION_CAP
+        stats.hit_pagination_cap = True
+
+    runs = payload.get("workflow_runs") or []
+    if not runs:
+        return
+    stats.runs += _write_runs(
+        session, repo, [keep_run_fields(r) for r in runs], sha_map, stats
+    )
+    stats.pages += 1
+
+    page = 2
+    while len(runs) == page_size and (page - 1) * page_size < min(
+        total, REST_PAGINATION_CAP
+    ):
+        payload, headers = _rest_get(
+            client,
+            f"/repos/{owner}/{name}/actions/runs",
+            {
+                "per_page": page_size,
+                "page": page,
+                "created": f"{since.isoformat()}..{until.isoformat()}",
+            },
+        )
+        stats.requests += 1
+        stats.remaining = int(headers.get("x-ratelimit-remaining") or 0)
+        runs = payload.get("workflow_runs") or []
+        if not runs:
+            break
+        stats.runs += _write_runs(
+            session, repo, [keep_run_fields(r) for r in runs], sha_map, stats
+        )
+        stats.pages += 1
+        page += 1
+    session.commit()
+
+
+def fetch_actions_runs(
+    repo: str,
+    client: GitHubClient,
+    session: Session,
+    page_size: int = MAX_PAGE_SIZE,
+    max_pages: int | None = None,
+) -> ActionsStats:
+    if not 1 <= page_size <= MAX_PAGE_SIZE:
+        raise ValueError(f"page_size must be 1..{MAX_PAGE_SIZE}, got {page_size}")
+    owner, _, name = repo.partition("/")
+    if not owner or not name:
+        raise ValueError(f"--repo must be owner/name, got {repo!r}")
+
+    settings = get_settings()
+    cutoff = datetime.now(UTC) - timedelta(days=round(settings.history_months * 30.44))
+
+    record_ci_duration_basis(session)
+    sha_map = sha_to_work_item(session)
+    logger.info("%d known commit shas available to join against", len(sha_map))
+
+    stats = ActionsStats()
+    _fetch_window(
+        client,
+        session,
+        repo,
+        owner,
+        name,
+        cutoff.date(),
+        datetime.now(UTC).date(),
+        sha_map,
+        stats,
+        page_size,
+    )
+    session.commit()
+    return stats
+
+
+def _print_actions_report(repo: str, stats: ActionsStats) -> None:
+    print(f"\n=== {repo} — Actions runs ===")
+    print(f"  requests                   {stats.requests}")
+    print(f"  runs reported by GitHub    {stats.reported_total:,}")
+    print(f"  ci_run rows written        {stats.runs:,}")
+    coverage = stats.runs / stats.reported_total if stats.reported_total else 0
+    print(f"  coverage of the window     {coverage:.1%}")
+    mapped_pct = stats.mapped / stats.runs if stats.runs else 0
+    print(f"  joined to a work item      {stats.mapped:,}  ({mapped_pct:.1%})")
+    print("    unmapped runs keep a null work_item_id: head_sha is often a")
+    print("    merge ref that never appears as a commit in our clone.")
+    print("\n  CI waste signal")
+    print(f"    reruns (attempt > 1)     {stats.reruns:,}")
+    print(f"    failed runs              {stats.failures:,}")
+    print(f"    total wall-clock minutes {stats.total_minutes:,.0f}")
+    print(f"    minutes spent on reruns  {stats.rerun_minutes:,.0f}")
+    share = stats.rerun_minutes / stats.total_minutes if stats.total_minutes else 0
+    print(f"    RERUN SHARE OF CI TIME   {share:.1%}   <- the waste number")
+    print(f"\n  duration basis             {CI_DURATION_BASIS} (in run_config)")
+    if stats.hit_pagination_cap:
+        print(
+            f"  WARNING: {stats.unreachable:,} runs are unreachable — a single day "
+            f"exceeded\n  GitHub's {REST_PAGINATION_CAP}-result pagination cap and "
+            "cannot be split further.\n  CI totals for those days are a floor, not "
+            "a total. Say so on the slide."
+        )
+    print(f"  REST requests remaining    {stats.remaining}\n")
 
 
 if __name__ == "__main__":

@@ -12,6 +12,8 @@ loudly in a demo; a login reaching Postgres fails silently and permanently.
 from __future__ import annotations
 
 import json
+import time
+from datetime import datetime
 
 import httpx
 import pytest
@@ -19,8 +21,9 @@ import pytest
 from app.ingestion.github_connector import (
     MAX_PAGE_SIZE,
     PR_QUERY,
+    RUN_FIELDS,
+    GitHubClient,
     GitHubError,
-    GitHubGraphQL,
     MissingToken,
     RateLimit,
     RateLimiter,
@@ -28,9 +31,11 @@ from app.ingestion.github_connector import (
     _assert_scrubbed,
     _count_timeline,
     collect_logins,
+    keep_run_fields,
     redact_text,
     scrub_actor,
     scrub_payload,
+    wall_clock_minutes,
 )
 
 
@@ -112,9 +117,9 @@ def graphql_page(nodes, has_next=False, end_cursor="CUR1", cost=1, remaining=499
     }
 
 
-def make_client(handler, clock: FakeClock | None = None) -> GitHubGraphQL:
+def make_client(handler, clock: FakeClock | None = None) -> GitHubClient:
     clock = clock or FakeClock()
-    return GitHubGraphQL(
+    return GitHubClient(
         token="ghp_fake",
         client=httpx.Client(transport=httpx.MockTransport(handler)),
         limiter=RateLimiter(sleep=clock.sleep, now=clock.now),
@@ -128,7 +133,7 @@ def make_client(handler, clock: FakeClock | None = None) -> GitHubGraphQL:
 def test_missing_token_is_refused_with_an_actionable_message(token):
     """GraphQL v4 has no anonymous tier, unlike REST's 60/hr."""
     with pytest.raises(MissingToken) as excinfo:
-        GitHubGraphQL(token=token)
+        GitHubClient(token=token)
     assert "GITHUB_TOKEN" in str(excinfo.value)
 
 
@@ -579,3 +584,307 @@ def test_repo_must_be_owner_slash_name(clean_github_rows):
 
     with write_session() as session, pytest.raises(ValueError, match="owner/name"):
         fetch_repo("kafka", make_client(handler), session)
+
+
+# --- Actions runs --------------------------------------------------------
+
+
+def run_node(
+    run_id=1,
+    sha="abc",
+    attempt=1,
+    conclusion="success",
+    started="2026-03-01T10:00:00Z",
+    updated="2026-03-01T10:12:30Z",
+):
+    """A workflow run as GitHub returns it, including the parts we discard."""
+    return {
+        "id": run_id,
+        "head_sha": sha,
+        "conclusion": conclusion,
+        "run_started_at": started,
+        "updated_at": updated,
+        "run_attempt": attempt,
+        "name": "CI",
+        # Everything below is real API noise that must NOT reach Postgres.
+        "head_commit": {"author": {"name": "Ada Lovelace", "email": "ada@apache.org"}},
+        "actor": {"login": "octocat"},
+        "repository": {"full_name": "apache/kafka", "owner": {"login": "apache"}},
+    }
+
+
+def test_run_projection_drops_the_identity_bearing_fields():
+    """head_commit.author carries a real name AND email. The projection is a
+    privacy control, not just a size optimisation."""
+    kept = keep_run_fields(run_node())
+    assert set(kept) == (set(RUN_FIELDS) - {"name"}) | {"workflow_name"}
+    assert kept["workflow_name"] == "CI"
+    assert "head_commit" not in kept
+    assert "actor" not in kept
+    assert "Ada Lovelace" not in json.dumps(kept)
+    assert "ada@apache.org" not in json.dumps(kept)
+
+
+def test_wall_clock_minutes():
+    assert wall_clock_minutes(run_node()) == pytest.approx(12.5)
+
+
+def test_wall_clock_is_never_negative():
+    """A run whose updated_at precedes run_started_at would otherwise produce
+    a negative cost."""
+    run = run_node(started="2026-03-01T10:00:00Z", updated="2026-03-01T09:00:00Z")
+    assert wall_clock_minutes(run) == 0.0
+
+
+def test_wall_clock_handles_a_run_that_never_started():
+    assert wall_clock_minutes(run_node(started=None)) == 0.0
+
+
+def test_rerun_is_detected_from_run_attempt():
+    assert run_node(attempt=2)["run_attempt"] > 1
+
+
+# --- Actions against live Postgres ---------------------------------------
+
+
+@pytest.fixture
+def clean_actions_rows(pg_engine):
+    from sqlalchemy import text
+
+    def _clean():
+        with pg_engine.begin() as conn:
+            conn.execute(text("DELETE FROM ci_run"))
+            conn.execute(
+                text("DELETE FROM raw_payload WHERE source = 'github_actions'")
+            )
+
+    _clean()
+    yield
+    _clean()
+
+
+def _actions_response(runs, total=None):
+    return {
+        "total_count": total if total is not None else len(runs),
+        "workflow_runs": runs,
+    }
+
+
+def _fetch_actions(handler, **kw):
+    from app.db.session import write_session
+    from app.ingestion.github_connector import fetch_actions_runs
+
+    with write_session() as session:
+        return fetch_actions_runs("apache/kafka", make_client(handler), session, **kw)
+
+
+def test_actions_runs_land_in_ci_run(clean_actions_rows):
+    def handler(request):
+        return httpx.Response(
+            200,
+            json=_actions_response([run_node(1), run_node(2, attempt=2)]),
+            headers={"x-ratelimit-remaining": "4990"},
+        )
+
+    stats = _fetch_actions(handler)
+    assert stats.runs == 2
+    assert stats.reruns == 1
+    assert stats.total_minutes == pytest.approx(25.0)
+    assert stats.rerun_minutes == pytest.approx(12.5)
+
+
+def test_created_filter_bounds_the_window(clean_actions_rows):
+    seen = {}
+
+    def handler(request):
+        seen["created"] = dict(request.url.params).get("created")
+        seen["per_page"] = dict(request.url.params).get("per_page")
+        return httpx.Response(200, json=_actions_response([]))
+
+    _fetch_actions(handler)
+    # A range, not ">=SINCE": the pager bisects windows to get under GitHub's
+    # 1,000-result pagination cap, so every request names both ends.
+    since, sep, until = seen["created"].partition("..")
+    assert sep == "..", f"expected a date range, got {seen['created']!r}"
+    assert datetime.fromisoformat(since) < datetime.fromisoformat(until)
+    assert seen["per_page"] == "100"
+
+
+def test_timing_endpoint_is_never_called(clean_actions_rows):
+    """One request per run would eat the entire REST budget."""
+    paths = []
+
+    def handler(request):
+        paths.append(request.url.path)
+        return httpx.Response(200, json=_actions_response([run_node(1)]))
+
+    _fetch_actions(handler)
+    assert not any("timing" in p for p in paths)
+    assert all(p.endswith("/actions/runs") for p in paths)
+
+
+def test_duration_basis_is_recorded_in_run_config(clean_actions_rows):
+    """The disclosure lives in the database, so it survives the demo."""
+    from sqlalchemy import text
+
+    from app.db.session import get_write_engine
+
+    def handler(request):
+        return httpx.Response(200, json=_actions_response([run_node(1)]))
+
+    _fetch_actions(handler)
+    with get_write_engine().connect() as conn:
+        value, note = conn.execute(
+            text("SELECT value, note FROM run_config WHERE key='ci_duration_basis'")
+        ).one()
+    assert value == "wall_clock"
+    assert "billable" in note
+
+
+def test_run_joins_to_a_work_item_when_the_sha_is_known(clean_actions_rows):
+    """git_local stores each commit's sha in event_log.attrs."""
+    from sqlalchemy import text
+
+    from app.db.session import get_write_engine
+
+    with get_write_engine().connect() as conn:
+        known_sha = conn.execute(
+            text("SELECT attrs->>'sha' FROM event_log WHERE activity='commit' LIMIT 1")
+        ).scalar_one()
+
+    def handler(request):
+        return httpx.Response(
+            200, json=_actions_response([run_node(1, sha=known_sha), run_node(2)])
+        )
+
+    stats = _fetch_actions(handler)
+    assert stats.mapped == 1, "the known sha should have joined to its case"
+
+
+def test_unmatched_runs_keep_a_null_work_item(clean_actions_rows):
+    """Most runs do not map and that is fine — they must not be dropped."""
+    from sqlalchemy import text
+
+    from app.db.session import get_write_engine
+
+    def handler(request):
+        return httpx.Response(
+            200, json=_actions_response([run_node(1, sha="no-such-sha")])
+        )
+
+    stats = _fetch_actions(handler)
+    assert stats.runs == 1
+    assert stats.mapped == 0
+    with get_write_engine().connect() as conn:
+        assert (
+            conn.execute(
+                text("SELECT work_item_id FROM ci_run WHERE head_sha='no-such-sha'")
+            ).scalar_one()
+            is None
+        )
+
+
+def test_actions_refetch_is_idempotent(clean_actions_rows):
+    from sqlalchemy import text
+
+    from app.db.session import get_write_engine
+
+    def handler(request):
+        return httpx.Response(200, json=_actions_response([run_node(1), run_node(2)]))
+
+    _fetch_actions(handler)
+    _fetch_actions(handler)
+    with get_write_engine().connect() as conn:
+        assert conn.execute(text("SELECT count(*) FROM ci_run")).scalar_one() == 2
+
+
+def test_no_identity_from_actions_reaches_postgres(clean_actions_rows):
+    from sqlalchemy import text
+
+    from app.db.session import get_write_engine
+
+    def handler(request):
+        return httpx.Response(200, json=_actions_response([run_node(1)]))
+
+    _fetch_actions(handler)
+    with get_write_engine().connect() as conn:
+        blob = conn.execute(
+            text("SELECT body::text FROM raw_payload WHERE source='github_actions'")
+        ).scalar_one()
+    for leak in ("Ada Lovelace", "ada@apache.org", "octocat", '"login"'):
+        assert leak not in blob
+
+
+def test_dense_window_is_bisected_rather_than_truncated(clean_actions_rows):
+    """GitHub reports 103,888 runs for apache/kafka but paginates only 1,000.
+
+    A flat pager collects the most recent 1% and calls it a year: the rows are
+    real, there are just almost none for any sprint older than a fortnight.
+    Each window must therefore be split until it fits under the cap.
+    """
+    windows = []
+
+    def handler(request):
+        created = dict(request.url.params)["created"]
+        since, _, until = created.partition("..")
+        windows.append((since, until))
+        span_days = (datetime.fromisoformat(until) - datetime.fromisoformat(since)).days
+        # Wide windows look dense; narrow ones fit under the cap.
+        if span_days > 20:
+            return httpx.Response(
+                200,
+                json=_actions_response([], total=50_000),
+                headers={"x-ratelimit-remaining": "4000"},
+            )
+        return httpx.Response(
+            200,
+            json=_actions_response([run_node(1)], total=1),
+            headers={"x-ratelimit-remaining": "4000"},
+        )
+
+    stats = _fetch_actions(handler)
+    assert len(windows) > 1, "the 12-month window was never split"
+    spans = [
+        (datetime.fromisoformat(u) - datetime.fromisoformat(s)).days for s, u in windows
+    ]
+    assert min(spans) <= 20, "bisection did not reach a window under the cap"
+    assert not stats.hit_pagination_cap
+    assert stats.runs > 0
+
+
+def test_bisection_terminates_at_a_single_day(clean_actions_rows):
+    """A day with >1,000 runs cannot be split further. It must stop and say
+    the number is a floor, not loop forever."""
+
+    def handler(request):
+        return httpx.Response(
+            200,
+            json=_actions_response([run_node(1)], total=50_000),
+            headers={"x-ratelimit-remaining": "4000"},
+        )
+
+    stats = _fetch_actions(handler)
+    assert stats.hit_pagination_cap
+    assert stats.unreachable > 0
+
+
+def test_rest_budget_exhaustion_sleeps(clean_actions_rows):
+    clock = FakeClock()
+    limiter = RateLimiter(sleep=clock.sleep, now=clock.now, primary_floor=100)
+    limiter.after_rest_response(
+        httpx.Headers(
+            {
+                "x-ratelimit-remaining": "3",
+                "x-ratelimit-reset": str(int(time.time()) + 30),
+            }
+        )
+    )
+    assert clock.slept and clock.slept[-1] > 0
+
+
+def test_workflow_name_is_stored_under_an_unambiguous_key():
+    """A bare `name` key is what a PERSON's name arrives under, so the scrub
+    guard rejects it. The workflow name is renamed rather than exempted."""
+    kept = keep_run_fields(run_node())
+    assert "name" not in kept
+    _assert_scrubbed(kept)
