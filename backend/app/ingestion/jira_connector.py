@@ -359,7 +359,18 @@ class JiraClient:
                 raise JiraError(f"404 for {path} — check the project key")
             if response.status_code != 200:
                 raise JiraError(f"HTTP {response.status_code}: {response.text[:300]}")
-            return response.json()
+            try:
+                return response.json()
+            except ValueError as exc:
+                # A 200 whose body stopped mid-string. ASF cuts connections
+                # constantly and a 50-issue page with inline changelogs is a
+                # few hundred KB, so this is the most likely place to meet it.
+                # The status code is 200 and every check above passes.
+                last = JiraError(f"truncated response body: {exc}")
+                self.retries += 1
+                self._backoff(attempt)
+                logger.warning("truncated body on %s, retrying", path)
+                continue
 
         raise JiraError(f"giving up after {MAX_RETRIES} attempts: {last}")
 

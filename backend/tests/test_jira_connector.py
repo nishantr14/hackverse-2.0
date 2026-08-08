@@ -372,3 +372,28 @@ def test_a_description_full_of_identity_cannot_reach_postgres():
     blob = json.dumps(scrubbed)
     for leak in ("ada@apache.org", "J Smith", "jsmith"):
         assert leak not in blob
+
+
+def test_a_truncated_response_body_is_retried():
+    """ASF cuts connections mid-page and a 50-issue page with inline
+    changelogs is a few hundred KB. The status code is still 200."""
+    calls = {"n": 0}
+
+    def handler(request):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return httpx.Response(
+                200,
+                headers={"content-type": "application/json"},
+                content=b'{"total": 2155, "issues": [{"key": "KAFK',
+            )
+        return httpx.Response(200, json={"total": 0, "issues": []})
+
+    client = JiraClient(
+        "https://jira.example",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        sleep=FakeClock().sleep,
+    )
+    client.get("/rest/api/2/search", {})
+    assert calls["n"] == 2
+    assert client.retries == 1

@@ -589,7 +589,21 @@ class GitHubClient:
             if response.status_code != 200:
                 raise GitHubError(f"HTTP {response.status_code}: {response.text[:300]}")
 
-            payload = response.json()
+            try:
+                payload = response.json()
+            except ValueError as exc:
+                # A 200 whose body stopped mid-string. GitHub cut the
+                # connection partway through a 219 KB page and httpx handed
+                # back what had arrived; only the JSON parser noticed. Every
+                # status-code check above passed, so without this the run dies
+                # 40 minutes in with a JSONDecodeError and no retry — the same
+                # shape of bug as the ASF connection resets, where the
+                # documented failure mode was not the real one.
+                last_error = GitHubError(f"truncated response body: {exc}")
+                logger.warning("truncated response body, retrying")
+                self.limiter.backoff(attempt)
+                continue
+
             if payload.get("errors"):
                 types = {
                     e.get("type") for e in payload["errors"] if isinstance(e, dict)
@@ -919,8 +933,16 @@ def _rest_get(
         if response.status_code != 200:
             raise GitHubError(f"HTTP {response.status_code}: {response.text[:300]}")
 
+        try:
+            payload = response.json()
+        except ValueError as exc:  # truncated body; see execute()
+            last_error = GitHubError(f"truncated response body: {exc}")
+            logger.warning("truncated REST body, retrying")
+            client.limiter.backoff(attempt)
+            continue
+
         client.limiter.after_rest_response(response.headers)
-        return response.json(), response.headers
+        return payload, response.headers
 
     raise GitHubError(f"giving up after {MAX_RETRIES} attempts: {last_error}")
 

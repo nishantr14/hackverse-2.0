@@ -996,3 +996,22 @@ def test_a_label_literally_named_like_a_person_still_cannot_leak_a_key():
     from app.ingestion.github_connector import flatten_labels
 
     _assert_scrubbed({"labels": flatten_labels({"nodes": [{"name": "Ada Lovelace"}]})})
+
+
+def test_a_truncated_response_body_is_retried():
+    """A 200 whose body stopped mid-string. Every status-code check passes and
+    only the JSON parser notices — this killed a PR re-fetch 40 minutes in."""
+    calls = {"n": 0}
+
+    def handler(request):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return httpx.Response(
+                200,
+                headers={"content-type": "application/json"},
+                content=b'{"data": {"repository": {"pullReq',
+            )
+        return httpx.Response(200, json=graphql_page([]))
+
+    make_client(handler).execute(PR_QUERY, {})
+    assert calls["n"] == 2, "the truncated page was not retried"
