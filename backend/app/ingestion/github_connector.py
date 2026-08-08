@@ -1063,7 +1063,6 @@ def _fetch_window(
     stats.requests += 1
     stats.remaining = int(headers.get("x-ratelimit-remaining") or 0)
     total = int(payload.get("total_count") or 0)
-    stats.reported_total += total
 
     if total > REST_PAGINATION_CAP and since < until:
         midpoint = since + (until - since) / 2
@@ -1104,6 +1103,12 @@ def _fetch_window(
         )
         stats.unreachable += total - REST_PAGINATION_CAP
         stats.hit_pagination_cap = True
+
+    # Count the window's total ONLY here, at a leaf. Counting it before the
+    # bisection above added every parent window on top of its own children —
+    # apache/kafka reported 878,404 runs against a real 103,888 and the
+    # coverage line read 11.8% when the true figure was 100%.
+    stats.reported_total += total
 
     runs = payload.get("workflow_runs") or []
     if not runs:

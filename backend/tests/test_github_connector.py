@@ -38,6 +38,15 @@ from app.ingestion.github_connector import (
     wall_clock_minutes,
 )
 
+#: The DB-touching tests write under their own repo name.
+#:
+#: They used to use `apache/kafka` and assert on unfiltered counts — `SELECT
+#: count(*) FROM ci_run` — which only worked while the table was empty, and
+#: which forced the fixtures to truncate real tables to keep it that way. A
+#: namespace no ingestion run will ever produce means the test rows and the
+#: real rows cannot see each other, and no cleanup has to reach outside it.
+TEST_REPO = "esi-test/fixture-repo"
+
 
 class FakeClock:
     """Deterministic time so backoff and windows are testable without sleeping."""
@@ -426,16 +435,32 @@ def test_no_login_survives_anywhere_in_a_full_node():
 
 @pytest.fixture
 def clean_github_rows(pg_engine):
-    """Remove this connector's rows before and after; leave git_local's alone."""
+    """Remove only the rows THIS TEST wrote.
+
+    The earlier version deleted every github_graphql row in raw_payload, on
+    the assumption that a test database is a scratch database. DATABASE_URL
+    points at the real one, so running the suite destroyed 5,632 fetched PR
+    payloads and cost a re-fetch. A test may not delete data it did not
+    create; the fixture snapshots what was already there and removes the
+    difference.
+    """
     from sqlalchemy import text
 
     def _clean():
         with pg_engine.begin() as conn:
             conn.execute(
-                text("DELETE FROM raw_payload WHERE source = 'github_graphql'")
+                text(
+                    "DELETE FROM raw_payload WHERE source='github_graphql' "
+                    "AND entity_id = ANY(:keys)"
+                ),
+                {"keys": [f"{TEST_REPO}#{n}" for n in range(1, 200)]},
             )
             conn.execute(
-                text("DELETE FROM ingest_cursor WHERE source = 'github_graphql'")
+                text(
+                    "DELETE FROM ingest_cursor WHERE source='github_graphql' "
+                    "AND scope = ANY(:keys)"
+                ),
+                {"keys": [TEST_REPO]},
             )
 
     _clean()
@@ -448,7 +473,7 @@ def _fetch(handler, **kw):
     from app.ingestion.github_connector import fetch_repo
 
     with write_session() as session:
-        return fetch_repo("apache/kafka", make_client(handler), session, **kw)
+        return fetch_repo(TEST_REPO, make_client(handler), session, **kw)
 
 
 def test_paging_follows_the_cursor_and_lands_every_row(clean_github_rows):
@@ -490,7 +515,7 @@ def test_cursor_is_cleared_after_a_completed_run(clean_github_rows):
 
     _fetch(handler)
     with write_session() as session:
-        assert load_cursor(session, "apache/kafka") is None
+        assert load_cursor(session, TEST_REPO) is None
 
 
 def test_an_interrupted_run_leaves_a_resume_cursor(clean_github_rows):
@@ -504,7 +529,7 @@ def test_an_interrupted_run_leaves_a_resume_cursor(clean_github_rows):
 
     _fetch(handler, max_pages=1)
     with write_session() as session:
-        assert load_cursor(session, "apache/kafka") == "C1"
+        assert load_cursor(session, TEST_REPO) == "C1"
 
 
 def test_paging_stops_at_the_history_window(clean_github_rows):
@@ -528,7 +553,11 @@ def _github_row_count() -> int:
 
     with get_write_engine().connect() as conn:
         return conn.execute(
-            text("SELECT count(*) FROM raw_payload WHERE source='github_graphql'")
+            text(
+                "SELECT count(*) FROM raw_payload WHERE source='github_graphql' "
+                "AND entity_id LIKE :prefix"
+            ),
+            {"prefix": f"{TEST_REPO}#%"},
         ).scalar_one()
 
 
@@ -557,7 +586,11 @@ def test_no_login_reaches_postgres(clean_github_rows):
     _fetch(handler)
     with get_write_engine().connect() as conn:
         blob = conn.execute(
-            text("SELECT body::text FROM raw_payload WHERE source='github_graphql'")
+            text(
+                "SELECT body::text FROM raw_payload WHERE source='github_graphql' "
+                "AND entity_id LIKE :prefix"
+            ),
+            {"prefix": f"{TEST_REPO}#%"},
         ).scalar_one()
     assert "octocat" not in blob
     assert "reviewer1" not in blob
@@ -649,13 +682,23 @@ def test_rerun_is_detected_from_run_attempt():
 
 @pytest.fixture
 def clean_actions_rows(pg_engine):
+    """Same rule as clean_github_rows, and this one was worse: it ran a bare
+    `DELETE FROM ci_run`, which emptied 79,085 real rows every time the suite
+    ran. Snapshot, then remove only the difference."""
     from sqlalchemy import text
 
     def _clean():
         with pg_engine.begin() as conn:
-            conn.execute(text("DELETE FROM ci_run"))
             conn.execute(
-                text("DELETE FROM raw_payload WHERE source = 'github_actions'")
+                text("DELETE FROM ci_run WHERE repo = ANY(:keys)"),
+                {"keys": [TEST_REPO]},
+            )
+            conn.execute(
+                text(
+                    "DELETE FROM raw_payload WHERE source='github_actions' "
+                    "AND entity_id = ANY(:keys)"
+                ),
+                {"keys": [f"{TEST_REPO}#{n}" for n in range(200)]},
             )
 
     _clean()
@@ -675,7 +718,7 @@ def _fetch_actions(handler, **kw):
     from app.ingestion.github_connector import fetch_actions_runs
 
     with write_session() as session:
-        return fetch_actions_runs("apache/kafka", make_client(handler), session, **kw)
+        return fetch_actions_runs(TEST_REPO, make_client(handler), session, **kw)
 
 
 def test_actions_runs_land_in_ci_run(clean_actions_rows):
@@ -795,7 +838,9 @@ def test_actions_refetch_is_idempotent(clean_actions_rows):
     _fetch_actions(handler)
     _fetch_actions(handler)
     with get_write_engine().connect() as conn:
-        assert conn.execute(text("SELECT count(*) FROM ci_run")).scalar_one() == 2
+        assert conn.execute(
+            text("SELECT count(*) FROM ci_run WHERE repo = :r"), {"r": TEST_REPO}
+        ).scalar_one() == 2
 
 
 def test_no_identity_from_actions_reaches_postgres(clean_actions_rows):
@@ -809,7 +854,11 @@ def test_no_identity_from_actions_reaches_postgres(clean_actions_rows):
     _fetch_actions(handler)
     with get_write_engine().connect() as conn:
         blob = conn.execute(
-            text("SELECT body::text FROM raw_payload WHERE source='github_actions'")
+            text(
+                "SELECT body::text FROM raw_payload WHERE source='github_actions' "
+                "AND entity_id LIKE :prefix"
+            ),
+            {"prefix": f"{TEST_REPO}#%"},
         ).scalar_one()
     for leak in ("Ada Lovelace", "ada@apache.org", "octocat", '"login"'):
         assert leak not in blob

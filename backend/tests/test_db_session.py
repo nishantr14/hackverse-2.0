@@ -68,17 +68,34 @@ def test_grants_and_forbidden_sets_do_not_overlap():
     assert not APP_ROLE_GRANTS & APP_ROLE_FORBIDDEN
 
 
-def test_grant_list_matches_the_frozen_schema(schema_sql):
-    """APP_ROLE_GRANTS is a copy of the schema's GRANT statement. Prove it."""
-    grant_block = schema_sql.split("GRANT SELECT ON", 1)[1].split("TO esi_app", 1)[0]
-    in_sql = {
-        token.strip().strip(",")
-        for token in grant_block.replace("\n", " ").split()
-        if token.strip().strip(",")
-    }
+def _granted_relations(sql: str) -> set[str]:
+    granted: set[str] = set()
+    for block in sql.split("GRANT SELECT ON")[1:]:
+        for token in block.split("TO esi_app", 1)[0].replace("\n", " ").split():
+            name = token.strip().strip(",")
+            if name:
+                granted.add(name)
+    return granted
+
+
+def test_grant_list_matches_the_sql(schema_sql):
+    """APP_ROLE_GRANTS is a copy of what the SQL actually grants. Prove it.
+
+    Both sources count. docs/schema.sql is frozen, so a view added later —
+    v_event_log and v_case_evidence, in migrations/002 — is granted there
+    instead. Reading only the frozen file would make a legitimate grant look
+    like drift, which is how a check stops being trusted.
+    """
+    from pathlib import Path
+
+    migrations = Path(__file__).resolve().parents[1] / "migrations"
+    in_sql = _granted_relations(schema_sql)
+    for path in sorted(migrations.glob("*.sql")):
+        in_sql |= _granted_relations(path.read_text(encoding="utf-8"))
+
     assert in_sql == set(APP_ROLE_GRANTS), (
-        "docs/schema.sql and APP_ROLE_GRANTS disagree. The schema is frozen — "
-        "fix session.py."
+        "the SQL grants and APP_ROLE_GRANTS disagree — fix session.py, or the "
+        "migration if a view was granted that should not be."
     )
 
 
@@ -114,3 +131,55 @@ def test_app_role_cannot_write(pg_engine):
         conn.execute(text("INSERT INTO run_config (key, value) VALUES ('x', 'y')"))
     message = str(excinfo.value).lower()
     assert "read-only" in message or "permission denied" in message
+
+
+# --- test hygiene ---------------------------------------------------------
+
+#: Tables that hold ingested data. Deleting from one of these without scoping
+#: the delete destroys work someone waited forty minutes for.
+REAL_TABLES = ("raw_payload", "ci_run", "event_log", "work_item", "actor")
+
+
+def test_no_test_deletes_real_rows_unscoped():
+    """DATABASE_URL points at the real database, not a scratch one.
+
+    This exists because two fixtures in test_github_connector.py ran
+    `DELETE FROM ci_run` and `DELETE FROM raw_payload WHERE source=...` to
+    tidy up after themselves, and every run of the suite silently emptied
+    79,085 CI rows and 5,632 fetched PR payloads. A delete in a test must name
+    the rows the test itself created.
+    """
+    import ast
+    import re
+    from pathlib import Path
+
+    pattern = re.compile(
+        r"DELETE\s+FROM\s+(" + "|".join(REAL_TABLES) + r")\b", re.IGNORECASE
+    )
+    offenders = []
+    for path in Path(__file__).parent.glob("test_*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        # Docstrings talk ABOUT these statements — including this one — so
+        # scan executable string literals only.
+        docstrings = {
+            id(node.body[0].value)
+            for node in ast.walk(tree)
+            if isinstance(
+                node, ast.Module | ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef
+            )
+            and node.body
+            and isinstance(node.body[0], ast.Expr)
+            and isinstance(node.body[0].value, ast.Constant)
+            and isinstance(node.body[0].value.value, str)
+        }
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Constant) or not isinstance(node.value, str):
+                continue
+            if id(node) in docstrings:
+                continue
+            match = pattern.search(node.value)
+            if match and "= ANY(" not in node.value:
+                offenders.append(f"{path.name}:{node.lineno}: {match.group(0)}")
+    assert not offenders, (
+        "unscoped DELETE against a real table:\n  " + "\n  ".join(offenders)
+    )
