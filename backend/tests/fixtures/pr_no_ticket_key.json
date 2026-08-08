@@ -1,0 +1,27 @@
+{
+  "number": 19565,
+  "title": "MINOR: bump gradle wrapper to 8.10",
+  "body": "Routine dependency bump. No behaviour change.",
+  "headRefName": "gradle-wrapper-bump",
+  "createdAt": "2026-03-02T09:00:00+00:00",
+  "updatedAt": "2026-03-04T11:00:00+00:00",
+  "mergedAt": "2026-03-04T10:30:00+00:00",
+  "closedAt": "2026-03-04T10:30:00+00:00",
+  "changedFiles": 2,
+  "additions": 4,
+  "deletions": 4,
+  "repo": "apache/kafka",
+  "mergeCommit": { "oid": "1111111111111111111111111111111111111111" },
+  "author": { "__typename": "User", "is_bot": false, "actor_hash": "aaaaaaaaaaaaaaaa" },
+  "files": { "nodes": [{ "path": "gradle/wrapper/gradle-wrapper.properties" }, { "path": "gradle/dependencies.gradle" }] },
+  "reviews": {
+    "nodes": [
+      {
+        "state": "APPROVED",
+        "submittedAt": "2026-03-04T10:00:00+00:00",
+        "author": { "__typename": "User", "is_bot": false, "actor_hash": "bbbbbbbbbbbbbbbb" }
+      }
+    ]
+  },
+  "timelineItems": { "nodes": [] }
+}
