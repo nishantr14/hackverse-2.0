@@ -1,0 +1,55 @@
+# Engineering Spend Intelligence — one-command local stack.
+# Owner: shared infra. Phase: Tier 0 (hour-8 gate: this must boot clean).
+# Same command on Linux and Windows: `docker compose -f infra/docker-compose.yml up`
+
+services:
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: esi
+      POSTGRES_PASSWORD: esi
+      POSTGRES_DB: esi
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ../docs/schema.sql:/docker-entrypoint-initdb.d/001_schema.sql:ro,z
+      - ./init-db:/docker-entrypoint-initdb.d/extra:ro,z
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U esi -d esi"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+    environment:
+      DATABASE_URL: postgresql+psycopg://esi:esi@postgres:5432/esi
+      ASF_JIRA_BASE_URL: https://issues.apache.org/jira
+      K_ANONYMITY_FLOOR: "5"
+      K_ANONYMITY_FALLBACK: "3"
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ../backend/app:/app/app:z
+
+  frontend:
+    build:
+      context: ../frontend
+      dockerfile: Dockerfile
+    environment:
+      VITE_API_BASE_URL: http://localhost:8000
+    ports:
+      - "5173:5173"
+    depends_on:
+      - backend
+    volumes:
+      - ../frontend/src:/app/src:z
+
+volumes:
+  pgdata:
