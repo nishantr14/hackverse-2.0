@@ -64,7 +64,12 @@ from sqlalchemy.orm import Session
 from app.config import get_settings
 from app.db.models import IngestCursor, RawPayload, WorkItem
 from app.db.session import write_session
-from app.ingestion.pseudonymize import actor_hash, assert_no_identity, is_bot
+from app.ingestion.pseudonymize import (
+    actor_hash,
+    assert_no_identity,
+    is_bot,
+    warn_if_default_salt,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -635,6 +640,7 @@ def _print_report(project: str, stats: Stats, session: Session) -> None:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    warn_if_default_salt()
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     settings = get_settings()
 

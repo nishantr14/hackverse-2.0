@@ -71,6 +71,10 @@ CUTOFF_NOTE = (
 #: own basis value rather than quietly defaulting to 'mid'.
 NON_COMMIT_BAND = "mid"
 
+#: Columns a later source may FILL but never OVERWRITE. Everything else takes
+#: the newest non-null value.
+FILL_ONLY = frozenset({"component"})
+
 
 @dataclass
 class Stats:
@@ -150,6 +154,32 @@ def ticket_key_from_pr(node: dict[str, Any], repo: str) -> tuple[str | None, str
             if is_real_ticket(match.group(1), repo):
                 return match.group(1), field_name
     return None, "none"
+
+
+def _known_components(session: Session) -> dict[str, frozenset[str]]:
+    """Components git has actually seen, per repo — the top-level directories."""
+    rows = session.execute(
+        select(WorkItem.repo, WorkItem.component).where(WorkItem.component.isnot(None))
+    ).all()
+    out: dict[str, set[str]] = {}
+    for repo, component in rows:
+        out.setdefault(repo, set()).add(component.lower())
+    return {repo: frozenset(names) for repo, names in out.items()}
+
+
+def component_from_labels(labels: list[str], known: frozenset[str]) -> str | None:
+    """A label becomes a component only if git independently found that component.
+
+    No hand-written taxonomy. `core`, `clients` and `streams` are apache/kafka
+    labels AND top-level directories, so they agree; `triage`, `KIP` and
+    `stale-assigned` are labels and nothing else, so they are ignored without
+    anyone having to enumerate them. If the repository layout changes, the set
+    changes with it.
+    """
+    for label in labels:
+        if label.lower() in known:
+            return label.lower()
+    return None
 
 
 def case_for_pr(node: dict[str, Any], repo: str) -> tuple[str, str, str]:
@@ -314,7 +344,15 @@ def upsert_work_items(session: Session, rows: list[dict[str, Any]]) -> int:
             stmt.on_conflict_do_update(
                 index_elements=["work_item_id"],
                 set_={
+                    # COALESCE(new, old) everywhere except FILL_ONLY, where the
+                    # existing value wins: git derives component from file
+                    # paths and is authoritative for it, so a label-derived
+                    # guess may fill a null but must never overwrite one.
                     col: func.coalesce(
+                        getattr(WorkItem, col), getattr(stmt.excluded, col)
+                    )
+                    if col in FILL_ONLY
+                    else func.coalesce(
                         getattr(stmt.excluded, col), getattr(WorkItem, col)
                     )
                     for col in columns
@@ -358,6 +396,7 @@ def map_pull_requests(session: Session, stats: Stats) -> None:
             select(WorkItem.work_item_id).where(WorkItem.case_source == "pr")
         )
     }
+    known_components = _known_components(session)
 
     events: list[dict[str, Any]] = []
     items: list[dict[str, Any]] = []
@@ -397,6 +436,7 @@ def map_pull_requests(session: Session, stats: Stats) -> None:
         created = parse_ts(node.get("createdAt"))
         author = note(actor_from(node.get("author")), created)
 
+        labels = [str(x) for x in (node.get("labels") or []) if x]
         items.append(
             {
                 "work_item_id": case_id,
@@ -406,6 +446,17 @@ def map_pull_requests(session: Session, stats: Stats) -> None:
                 "closed_at": parse_ts(node.get("closedAt")),
                 "source_ref": f"{repo}#{number}",
                 "jira_key": case_id if case_source == "ticket_key" else None,
+                # A GitHub milestone is the nearest thing this data has to an
+                # epic: the release or theme a PR was filed under. Without it
+                # work_item.epic is null for every case and the spend treemap
+                # can only break down by repo and component.
+                "epic": (node.get("milestone") or {}).get("title"),
+                # Component is derived from file paths and git is authoritative
+                # for it — this only fills the gap for the 1,391 PR cases that
+                # have no commit in the clone, where the alternative is null.
+                "component": component_from_labels(
+                    labels, known_components.get(repo, frozenset())
+                ),
             }
         )
 
@@ -414,11 +465,16 @@ def map_pull_requests(session: Session, stats: Stats) -> None:
 
         merged_at = parse_ts(node.get("mergedAt"))
         if merged_at:
+            # THE MERGER, NOT THE AUTHOR. Using the author made every merge
+            # unattributable to the person who actually took the decision —
+            # and on apache the two are rarely the same human, since a
+            # committer merges a contributor's PR.
+            merger = note(actor_from(node.get("mergedBy")), merged_at)
             events.append(
                 {
                     "event_id": event_id_for(*base, "merged", merged_at.isoformat()),
                     "work_item_id": case_id,
-                    "actor_hash": author,
+                    "actor_hash": merger,
                     "activity": "merged",
                     "ts": merged_at,
                     "source": "github",
@@ -430,7 +486,8 @@ def map_pull_requests(session: Session, stats: Stats) -> None:
                         # Descriptive only. Never an effort proxy — hard rule.
                         "additions": node.get("additions"),
                         "deletions": node.get("deletions"),
-                        "actor_absent": absence_reason(node.get("author")),
+                        "actor_absent": absence_reason(node.get("mergedBy")),
+                        "authored_by": author,
                     },
                 }
             )
@@ -558,6 +615,11 @@ def map_jira(session: Session, stats: Stats) -> None:
                 "priority": (fields.get("priority") or {}).get("name"),
                 "resolution": (fields.get("resolution") or {}).get("name"),
                 "parent_key": (fields.get("parent") or {}).get("key"),
+                # ASF's Epic Link is a custom field we do not fetch, so the
+                # parent issue is the closest honest equivalent: the bigger
+                # piece of work this one belongs to. GitHub cases get theirs
+                # from the milestone instead.
+                "epic": (fields.get("parent") or {}).get("key"),
                 "jira_created_at": created,
                 "jira_resolved_at": parse_ts(fields.get("resolutiondate")),
                 "opened_at": created,

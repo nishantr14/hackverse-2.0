@@ -76,7 +76,12 @@ from sqlalchemy.orm import Session
 from app.config import get_settings
 from app.db.models import CiRun, EventLog, IngestCursor, RawPayload, RunConfig
 from app.db.session import write_session
-from app.ingestion.pseudonymize import actor_hash, assert_no_identity, is_bot
+from app.ingestion.pseudonymize import (
+    actor_hash,
+    assert_no_identity,
+    is_bot,
+    warn_if_default_salt,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -154,6 +159,9 @@ query PullRequests($owner: String!, $name: String!, $cursor: String, $pageSize: 
         deletions
         mergeCommit { oid }
         author { login __typename }
+        mergedBy { login __typename }
+        milestone { title number }
+        labels(first: 20) { nodes { name } }
         files(first: 100) { nodes { path } }
         reviews(first: 20) {
           nodes { state submittedAt author { login __typename } }
@@ -449,6 +457,30 @@ def scrub_actor(node: Any) -> Any:
 TEXT_FIELDS = frozenset({"title", "body", "headRefName"})
 
 
+def flatten_labels(node: Any) -> list[str]:
+    """`{nodes: [{name: "core"}]}` -> `["core"]`.
+
+    A GitHub label is `{"name": "core"}` and a person is `{"name": "Ada
+    Lovelace"}`. The guard cannot tell them apart from the key alone, and a
+    guard that has to guess is not a guard — so rather than teaching it to
+    distinguish two identical shapes by context, the shape is removed: a label
+    set becomes a list of plain strings and no `name` key reaches Postgres.
+
+    Same move as `workflow_name` in the Actions projection, and for the same
+    reason. `name` is exactly what a person's name arrives under, so the day
+    that key is allowed through anywhere is the day it gets through everywhere.
+    """
+    if isinstance(node, dict):
+        node = node.get("nodes") or []
+    if not isinstance(node, list):
+        return []
+    return [
+        label["name"]
+        for label in node
+        if isinstance(label, dict) and isinstance(label.get("name"), str)
+    ]
+
+
 def scrub_payload(obj: Any, known_logins: Iterable[str] | None = None) -> Any:
     """Walk the response, hash every login, and redact identity from free text.
 
@@ -462,7 +494,9 @@ def scrub_payload(obj: Any, known_logins: Iterable[str] | None = None) -> Any:
             return scrub_actor(obj)
         out: dict[str, Any] = {}
         for key, value in obj.items():
-            if key in TEXT_FIELDS:
+            if key == "labels":
+                out[key] = flatten_labels(value)
+            elif key in TEXT_FIELDS:
                 out[key] = redact_text(value, known_logins)
             else:
                 out[key] = scrub_payload(value, known_logins)
@@ -783,6 +817,7 @@ def _print_report(repo: str, stats: Stats) -> None:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    warn_if_default_salt()
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     settings = get_settings()
 

@@ -937,3 +937,62 @@ def test_workflow_name_is_stored_under_an_unambiguous_key():
     kept = keep_run_fields(run_node())
     assert "name" not in kept
     _assert_scrubbed(kept)
+
+
+# --- labels, milestone, mergedBy -----------------------------------------
+
+
+def test_labels_become_plain_strings_so_no_name_key_survives():
+    """A GitHub label is {"name": "core"} and a person is {"name": "Ada"}.
+    The guard cannot tell them apart, so the shape is removed rather than the
+    guard weakened — same fix as workflow_name in the Actions projection."""
+    from app.ingestion.github_connector import flatten_labels
+
+    labels = flatten_labels({"nodes": [{"name": "core"}, {"name": "streams"}]})
+    assert labels == ["core", "streams"]
+    _assert_scrubbed({"labels": labels})
+
+
+def test_a_pr_with_labels_and_a_milestone_passes_the_guard():
+    """This is the regression that kept work_item.epic permanently null."""
+    node = pr_node()
+    node["labels"] = {"nodes": [{"name": "core"}, {"name": "KIP"}]}
+    node["milestone"] = {"title": "4.0.0", "number": 12}
+    body = scrub_payload(node)
+    _assert_scrubbed(body)
+    assert body["labels"] == ["core", "KIP"]
+    assert body["milestone"]["title"] == "4.0.0"
+
+
+@pytest.mark.parametrize("field", ["milestone", "labels", "mergedBy"])
+def test_the_query_asks_for_the_fields_epic_and_attribution_need(field):
+    """work_item.epic stays null forever if the query never asks for the
+    milestone, and a merge has no actor if it never asks who merged it."""
+    assert field in PR_QUERY, f"PR_QUERY is missing {field}"
+
+
+def test_every_bounded_connection_in_the_query_has_a_page_size():
+    """GitHub rejects any unbounded connection outright, and the error does
+    not name the offending one — labels was the newest way to trip this."""
+    import re
+
+    for connection in re.findall(r"(\w+)\(([^)]*)\)", PR_QUERY):
+        name, args = connection
+        if name in ("pullRequests", "files", "reviews", "timelineItems", "labels"):
+            assert "first:" in args, f"{name} has no page size"
+
+
+def test_merged_by_is_scrubbed_like_any_other_actor():
+    node = pr_node()
+    node["mergedBy"] = {"login": "committer1", "__typename": "User"}
+    body = scrub_payload(node)
+    _assert_scrubbed(body)
+    assert body["mergedBy"]["actor_hash"]
+    assert "committer1" not in json.dumps(body)
+
+
+def test_a_label_literally_named_like_a_person_still_cannot_leak_a_key():
+    """Even a hostile label name is only ever a string in a list."""
+    from app.ingestion.github_connector import flatten_labels
+
+    _assert_scrubbed({"labels": flatten_labels({"nodes": [{"name": "Ada Lovelace"}]})})

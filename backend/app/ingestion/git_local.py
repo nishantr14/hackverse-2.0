@@ -60,6 +60,7 @@ from app.ingestion.pseudonymize import (
     assert_no_identity,
     identity_store,
     is_bot,
+    warn_if_default_salt,
 )
 
 logger = logging.getLogger(__name__)
@@ -692,6 +693,7 @@ def _print_report(repo: str, stats: Stats, sprints: int) -> None:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    warn_if_default_salt()
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     settings = get_settings()
 

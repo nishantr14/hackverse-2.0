@@ -28,7 +28,8 @@ import hashlib
 import re
 import sqlite3
 import subprocess
-from collections.abc import Iterable, Iterator
+import sys
+from collections.abc import Iterable, Iterator, Sequence
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
@@ -365,3 +366,73 @@ def assert_identity_db_ignored(repo_root: Path | None = None) -> None:
             f"{relative} IS TRACKED BY GIT. Remove it from the index immediately: "
             f"git rm --cached {relative}"
         )
+
+
+#: The salt as shipped. If two people both leave it at this, their hashes
+#: match — which looks like agreement and is actually the absence of a salt.
+DEFAULT_SALT = "change-me"
+
+
+def salt_fingerprint(salt: str | None = None) -> str:
+    """A shareable check that two machines agree on PSEUDONYMIZATION_SALT.
+
+    Everyone runs ingestion locally, so a salt that differs between two
+    laptops produces two actor_hash values for one person. Nothing errors —
+    the actor count simply inflates, the k-anonymity floor weakens, and the
+    two halves of somebody's work never join. It is the kind of divergence
+    that is invisible until the numbers are on a slide.
+
+    Compare THIS, never the salt. It is a hash under a different prefix than
+    actor_hash uses, so posting it in a group chat does not hand anyone a way
+    to reverse the actor hashes.
+    """
+    salt = get_settings().pseudonymization_salt if salt is None else salt
+    return _salt_fingerprint(salt)
+
+
+def warn_if_default_salt() -> bool:
+    """Shout at the start of every ingestion run if the salt was never set.
+
+    Called by each connector's main. Nothing fails — refusing to ingest at
+    hour 4 of a 36-hour build would be worse than the problem — but it must be
+    impossible to fetch a hundred thousand rows without seeing this.
+
+    A salt change is not a re-map, it is a RE-FETCH. GitHub logins and Jira
+    usernames are hashed inside the scrubber and never written to
+    identity.db, so there is nothing on disk to re-hash them from. Decide the
+    salt before the data, not after.
+    """
+    if get_settings().pseudonymization_salt != DEFAULT_SALT:
+        return False
+    print(
+        "\n  !! PSEUDONYMIZATION_SALT is still 'change-me'.\n"
+        f"  !! fingerprint {salt_fingerprint()} — everyone matching means "
+        "nobody has a salt.\n"
+        "  !! Agree one value across all four .env files BEFORE ingesting: "
+        "changing it later means re-fetching, not re-mapping.\n",
+        file=sys.stderr,
+    )
+    return True
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """`python -m app.ingestion.pseudonymize` — print the salt fingerprint.
+
+    Deliberately a CLI and not a field on /meta. /meta is served to the
+    browser; this is for four people to compare in a chat window.
+    """
+    settings = get_settings()
+    print(f"salt fingerprint  {salt_fingerprint()}")
+    print("compare this with your teammates. Same fingerprint = same hashes.")
+    if settings.pseudonymization_salt == DEFAULT_SALT:
+        print(
+            "\nWARNING: PSEUDONYMIZATION_SALT is still the shipped default.\n"
+            "  Everyone matches because nobody has a salt, not because we agree.\n"
+            "  Set one identical value in every .env before ingesting."
+        )
+        return 1
+    return 0
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(main())
