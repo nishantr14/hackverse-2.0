@@ -1015,3 +1015,34 @@ def test_a_truncated_response_body_is_retried():
 
     make_client(handler).execute(PR_QUERY, {})
     assert calls["n"] == 2, "the truncated page was not retried"
+
+
+def test_a_page_that_never_arrives_whole_halves_the_page_size(clean_github_rows):
+    """Retrying a body GitHub cannot stream is useless — all six attempts fail
+    on the same cursor. Adding milestone, labels and mergedBy pushed a 100-PR
+    page over that line. The fix is a smaller page, not more attempts."""
+    seen_sizes = []
+
+    def handler(request):
+        size = json.loads(request.content)["variables"]["pageSize"]
+        seen_sizes.append(size)
+        if size > 50:
+            raise httpx.ReadError("peer closed connection without sending "
+                                  "complete message body (incomplete chunked read)")
+        return httpx.Response(200, json=graphql_page([pr_node(1)]))
+
+    stats = _fetch(handler)
+    assert stats.page_size_reductions >= 1
+    assert seen_sizes[-1] <= 50, "page size was never reduced"
+    assert stats.pull_requests == 1, "the page was not re-fetched after halving"
+
+
+def test_page_size_reduction_stops_at_the_floor(clean_github_rows):
+    """Below the floor the page size is not the problem, and halving again
+    only burns requests against the rate limit."""
+
+    def handler(request):
+        raise httpx.ReadError("incomplete chunked read")
+
+    with pytest.raises(GitHubError):
+        _fetch(handler)

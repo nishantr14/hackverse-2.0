@@ -134,6 +134,25 @@ MAX_RETRIES = 6
 #: endpoint repeats rather than erroring, so we stop deliberately.
 REST_PAGINATION_CAP = 1000
 
+#: Floor for the adaptive page-size reduction in fetch_repo. Below this the
+#: problem is not the page size and halving again only wastes requests.
+MIN_PAGE_SIZE = 10
+
+#: httpx phrasings for "the body stopped early". A 200 with half a body is a
+#: transport failure wearing a success code, and none of the status-code
+#: checks can see it.
+TRUNCATION_MARKERS = (
+    "incomplete chunked read",
+    "without sending complete message body",
+    "truncated response body",
+    "peer closed connection",
+)
+
+
+def _is_truncation(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return any(marker in message for marker in TRUNCATION_MARKERS)
+
 PR_QUERY = """
 query PullRequests($owner: String!, $name: String!, $cursor: String, $pageSize: Int!) {
   rateLimit { limit cost remaining resetAt nodeCount }
@@ -237,6 +256,7 @@ class Stats:
     remaining: int = 0
     stopped_on_window: bool = False
     content_outside_window: int = 0
+    page_size_reductions: int = 0
 
 
 @dataclass
@@ -761,15 +781,39 @@ def fetch_repo(
 
     stats = Stats()
     while True:
-        data = client.execute(
-            PR_QUERY,
-            {
-                "owner": owner,
-                "name": name,
-                "cursor": cursor,
-                "pageSize": page_size,
-            },
-        )
+        try:
+            data = client.execute(
+                PR_QUERY,
+                {
+                    "owner": owner,
+                    "name": name,
+                    "cursor": cursor,
+                    "pageSize": page_size,
+                },
+            )
+        except GitHubError as exc:
+            # THE PAGE IS TOO BIG, NOT THE NETWORK TOO FLAKY.
+            #
+            # Adding milestone, labels and mergedBy pushed the per-page cost
+            # from 3 points to 4 and the response over whatever GitHub is
+            # willing to stream: it answers 200, starts a chunked body, and
+            # cuts it partway through. Retrying is useless — all six attempts
+            # failed on the same cursor, every time.
+            #
+            # 100 PRs x (100 files + 20 reviews + 30 timeline items + 20
+            # labels) is simply a lot of JSON. Halving the page and re-asking
+            # from the SAME cursor costs one wasted request and gets a body
+            # that arrives whole. Same lesson as ASF refusing maxResults=100.
+            if not _is_truncation(exc) or page_size <= MIN_PAGE_SIZE:
+                raise
+            page_size = max(MIN_PAGE_SIZE, page_size // 2)
+            stats.page_size_reductions += 1
+            logger.warning(
+                "response body kept arriving incomplete; halving page size to "
+                "%d and retrying the same cursor",
+                page_size,
+            )
+            continue
         rate = RateLimit.from_payload(data.get("rateLimit"))
         stats.points_spent += rate.cost
         stats.remaining = rate.remaining
