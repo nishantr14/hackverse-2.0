@@ -174,6 +174,7 @@ class Stats:
     points_spent: int = 0
     remaining: int = 0
     stopped_on_window: bool = False
+    content_outside_window: int = 0
 
 
 # ---------------------------------------------------------------------
@@ -529,6 +530,26 @@ def save_cursor(session: Session, repo: str, cursor: str | None) -> None:
 # ---------------------------------------------------------------------
 
 
+def _content_predates_window(node: dict[str, Any], cutoff: datetime) -> bool:
+    """True if a PR is only in the feed because someone touched it recently.
+
+    We page by UPDATED_AT DESC, which is the right filter for "was this active
+    recently". But a PR created and merged in 2023 re-enters the feed the
+    moment anyone comments on it, carrying 2023 timestamps.
+
+    git_local learned this the hard way: 39 rebased Flink commits with old
+    author dates stretched the global sprint grid from 26 windows to 63. The
+    mapper decides which of these timestamps become events, so this module
+    does not drop the row — it counts it and says so, loudly, in the report.
+    """
+    created = node.get("createdAt")
+    merged = node.get("mergedAt")
+    stamp = merged or created
+    if not stamp:
+        return False
+    return datetime.fromisoformat(stamp) < cutoff
+
+
 def _count_timeline(node: dict[str, Any], stats: Stats) -> None:
     for item in (node.get("timelineItems") or {}).get("nodes") or []:
         typename = (item or {}).get("__typename")
@@ -617,6 +638,8 @@ def fetch_repo(
                 stats.stopped_on_window = True
                 continue
             in_window.append(node)
+            if _content_predates_window(node, cutoff):
+                stats.content_outside_window += 1
             _count_timeline(node, stats)
 
         stats.pull_requests += _write_page(session, repo, in_window)
