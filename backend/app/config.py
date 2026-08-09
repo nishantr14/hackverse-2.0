@@ -7,10 +7,14 @@ Every key in .env.example has exactly one field here, and this class rejects
 keys it does not know about. That is deliberate: a typo'd env var must fail at
 import time, not silently fall back to a default and move a number on screen.
 
-Two of these values are ASSUMPTIONS rather than observations —
-MEETING_HOURS_PER_WEEK and SPRINT_DAYS. They are listed in ASSUMPTION_FIELDS
-so the UI can badge them. An assumption rendered as observed data is the single
-easiest way to lose the "isn't this made up?" question on stage.
+Three of these values are ASSUMPTIONS rather than observations —
+MEETING_HOURS_PER_WEEK, SPRINT_DAYS, and SESSION_GAP_MINUTES. They are listed
+in ASSUMPTION_FIELDS so the UI can badge them. An assumption rendered as
+observed data is the single easiest way to lose the "isn't this made up?"
+question on stage. SESSION_GAP_MINUTES joined this list once Gate B's own
+sensitivity table showed no threshold reproducing the "low hundreds of
+engineer-years" estimate from real data alone — the chosen value (480min, a
+workday) is a stated choice, not a discovered one.
 """
 
 from __future__ import annotations
@@ -27,7 +31,9 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 #: Fields whose value is a stated assumption, not anything we measured.
 #: The UI must render these with an "assumption" badge and, where the design
 #: allows, a slider. See decision #9 in .claude/CLAUDE.md.
-ASSUMPTION_FIELDS = frozenset({"meeting_hours_per_week", "sprint_days"})
+ASSUMPTION_FIELDS = frozenset(
+    {"meeting_hours_per_week", "sprint_days", "session_gap_minutes"}
+)
 
 
 class Settings(BaseSettings):
@@ -62,7 +68,13 @@ class Settings(BaseSettings):
     k_anonymity_fallback: int = Field(default=3, ge=1)
 
     # --- Cost: session inference ---
-    session_gap_minutes: int = Field(default=90, gt=0)
+    # 90min (the original default) treats most real inter-commit gaps as
+    # separate sessions — median gap between two commits on the same item
+    # by the same actor is ~7.9h, and OSS contribution is genuinely async.
+    # 480min (one workday) is a stated ASSUMPTION, not a discovered fact —
+    # the UI must badge it as one. Gate B sensitivity at 90/240/480/1440min:
+    # 16.4y / 24.3y / 33.2y / 35.4y implied engineer-years.
+    session_gap_minutes: int = Field(default=480, gt=0)
     session_lead_in_minutes: int = Field(default=30, ge=0)
     session_daily_cap_hours: int = Field(default=10, gt=0)
     sprint_days: int = Field(default=14, gt=0)

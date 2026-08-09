@@ -48,7 +48,12 @@ from app.db.session import write_session
 
 #: Gap settings for the sensitivity table. Not applied to the written rows —
 #: see report_gap_sensitivity. The configured value is what actually gets used.
-GAP_SWEEP_MINUTES: tuple[int, ...] = (60, 90, 120)
+#: Range matches Gate B's own investigation: 90 (the original default) never
+#: reproduced a plausible engineer-years figure on its own (median inter-
+#: commit gap on this data is ~7.9h — real async OSS work, not a bug), so the
+#: sweep runs out past a full day to show the whole shape, not just three
+#: points clustered at the low end.
+GAP_SWEEP_MINUTES: tuple[int, ...] = (90, 240, 480, 1440)
 
 #: Hours in a working year, for the engineer-years sanity check (Gate B).
 HOURS_PER_ENGINEER_YEAR = 1840

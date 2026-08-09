@@ -64,10 +64,20 @@ def test_assumptions_are_flagged_as_assumptions():
 
 
 def test_session_defaults_match_the_agreed_values():
-    s = Settings()
-    assert (s.session_gap_minutes, s.session_lead_in_minutes) == (90, 30)
-    assert s.session_daily_cap_hours == 10
-    assert s.sprint_days == 14
+    """The CODE default, not whatever a local .env happens to override it
+    to — that is the actual agreed value the team committed to."""
+    defaults = Settings.model_fields
+    assert defaults["session_gap_minutes"].default == 480
+    assert defaults["session_lead_in_minutes"].default == 30
+    assert defaults["session_daily_cap_hours"].default == 10
+    assert defaults["sprint_days"].default == 14
+
+
+def test_session_gap_minutes_is_flagged_as_an_assumption():
+    """Gate B: no threshold reproduced the 'low hundreds of engineer-years'
+    estimate from real data alone, so the chosen value is a stated choice
+    and must be badged, never presented as discovered."""
+    assert "session_gap_minutes" in ASSUMPTION_FIELDS
 
 
 # --- app boot ------------------------------------------------------------

@@ -159,12 +159,13 @@ def test_the_shipped_config_parses_and_has_every_band():
     assert set(cfg["rate_card"]["bands"]) == set(BANDS)
 
 
-def test_the_shipped_config_refuses_to_seed_until_it_is_filled_in():
-    """Ships with a blank citation deliberately. If this test ever starts
-    failing, someone has filled it in — check the URL is real, then delete
-    this test."""
-    with pytest.raises(RateCardError, match="source is incomplete"):
-        build_rates(load_config())
+def test_the_shipped_config_is_filled_in_and_builds_four_real_rates():
+    """config/rates.yaml now carries a real citation (PayScale India, per
+    level). If this ever starts raising RateCardError again, the config
+    regressed to a placeholder — check config/rates.yaml."""
+    rates = build_rates(load_config())
+    assert [r.role_band for r in rates] == list(BANDS)
+    assert all(r.source and r.hourly > 0 for r in rates)
 
 
 # --- band inference: the rule ---------------------------------------------

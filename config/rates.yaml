@@ -20,9 +20,9 @@ rate_card:
   # turns a cited figure into an invented one.
   # ------------------------------------------------------------------
   source:
-    publisher: ""      # e.g. "Levels.fyi India Software Engineer report"
-    url: ""            # the public page the medians come from
-    retrieved: ""      # YYYY-MM-DD, the day you pulled the figures
+    publisher: "PayScale India — Software Engineer salary research, by level"
+    url: "https://www.payscale.com/research/IN/Job=Software_Engineer/Salary"
+    retrieved: "2026-08-09"
 
   currency: INR
 
@@ -36,13 +36,23 @@ rate_card:
   working_days: 230
   hours_per_day: 8
 
-  # Annual medians, in `currency`, BEFORE the loading multiplier.
-  # Leave null and seeding will tell you which band is missing.
+  # Annual AVERAGE BASE salary, in `currency`, BEFORE the loading multiplier.
+  # Each band is its own PayScale India page (same publisher/methodology as
+  # the citation above, different job-title page per level); URL and sample
+  # size noted per band since the top-level citation can only hold one.
   bands:
-    junior: {annual: null}
-    mid: {annual: null}
-    senior: {annual: null}
-    staff: {annual: null}
+    # https://www.payscale.com/research/IN/Job=Junior_Software_Engineer/Salary
+    # n=122, last updated 2026-07-02
+    junior: {annual: 407030}
+    # https://www.payscale.com/research/IN/Job=Software_Engineer/Salary
+    # n=4950, last updated 2026-07-12
+    mid: {annual: 813748}
+    # https://www.payscale.com/research/IN/Job=Senior_Software_Engineer/Salary
+    # n=4319, last updated 2026-07-13
+    senior: {annual: 1671574}
+    # https://www.payscale.com/research/IN/Job=Staff_Software_Engineer/Salary
+    # n=120, last updated 2026-06-28
+    staff: {annual: 3923744}
 
 band_inference:
   # ------------------------------------------------------------------
