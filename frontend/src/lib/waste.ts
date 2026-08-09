@@ -12,7 +12,13 @@
 import type { Tone } from '../components/GlassCard';
 import type { WasteRow, WasteType } from '../data/types';
 
-export const WASTE_ORDER: WasteType[] = ['rework', 'latency', 'meeting', 'keyPerson'];
+export const WASTE_ORDER: WasteType[] = [
+  'meeting',
+  'ci',
+  'rework',
+  'latency',
+  'keyPerson',
+];
 
 /**
  * Colour is meaning, not identity, on this screen.
@@ -26,14 +32,19 @@ export const WASTE_TONE: Record<WasteType, Tone> = {
   rework: 'amber',
   latency: 'amber',
   meeting: 'neutral',
+  ci: 'amber',
   keyPerson: 'coral',
 };
 
 /** The one-line explanation of what each category actually counts. */
 export const WASTE_BASIS: Record<WasteType, string> = {
-  rework: 'Engineer-hours on code that was deleted or rewritten within 30 days, priced at role-band rates.',
-  latency: 'Loaded salary cost of the time finished work sat waiting for a reviewer.',
-  meeting: 'Scheduled duration × attendees × loaded rate, from calendar data.',
+  rework:
+    'Hours between a change request and the redo commit that answered it, priced at the redoer’s inferred band rate.',
+  latency:
+    'Wall-clock time finished work sat waiting for a first review. Reported as duration and never converted to rupees — nobody is billed to wait.',
+  meeting:
+    'Attendee count × scheduled duration × a blended band rate. Modelled from one assumption, not observed.',
+  ci: 'Runner minutes burned on reruns and failed CI runs, at the published GitHub Actions per-minute price.',
   keyPerson:
     'Value of in-flight work in components where a single author owns most recent changes. At risk, not spent.',
 };
@@ -48,14 +59,31 @@ export interface WasteCategory {
   share: number;
   /** True for categories that count money already spent. */
   recoverable: boolean;
+  /**
+   * False when this category is deliberately never priced. `amount` is then
+   * 0 and meaningless — read `hours` instead. A card must not render ₹0 for
+   * these: zero rupees and "we refuse to invent a rupee figure" are
+   * different claims, and only one of them is true here.
+   */
+  priced: boolean;
+  /** Total duration behind the category. The readout when `priced` is false. */
+  hours: number;
 }
 
 const LABEL: Record<WasteType, string> = {
   rework: 'Rework',
   latency: 'Review latency',
   meeting: 'Meeting cost',
+  ci: 'CI rerun waste',
   keyPerson: 'Key-person exposure',
 };
+
+function median(values: number[]): number {
+  if (values.length === 0) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid];
+}
 
 export function categorise(rows: WasteRow[]): WasteCategory[] {
   const recoverableTotal = rows
@@ -66,14 +94,24 @@ export function categorise(rows: WasteRow[]): WasteCategory[] {
     const own = rows.filter((r) => r.type === type).sort((a, b) => b.amountRupees - a.amountRupees);
     const amount = own.reduce((s, r) => s + r.amountRupees, 0);
     const recoverable = type !== 'keyPerson';
+    // A category is priced only if it has rows and every one of them is.
+    const priced = own.length > 0 && own.every((r) => r.priced !== false);
     return {
       type,
       label: LABEL[type],
       tone: WASTE_TONE[type],
       amount,
       rows: own,
-      share: recoverable && recoverableTotal > 0 ? amount / recoverableTotal : 0,
+      share: recoverable && priced && recoverableTotal > 0 ? amount / recoverableTotal : 0,
       recoverable,
+      priced,
+      // Priced categories add up: rupees in two components are rupees.
+      // Unpriced ones do NOT — each row is already a median wait, and
+      // waiting runs in parallel, so summing across components would
+      // invent centuries. Take the middle row instead.
+      hours: priced
+        ? own.reduce((s, r) => s + (r.hours ?? 0), 0)
+        : median(own.map((r) => r.hours ?? 0)),
     };
   });
 }

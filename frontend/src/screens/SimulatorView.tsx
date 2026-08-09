@@ -1,5 +1,5 @@
 import { AnimatePresence, motion } from 'framer-motion';
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Calculating } from '../components/Calculating';
 import { ConfidenceBand } from '../components/ConfidenceBand';
 import { ErrorPanel } from '../components/Feedback';
@@ -8,7 +8,7 @@ import { Figure, Headline, Name } from '../components/Headline';
 import { ImpactPanel } from '../components/ImpactPanel';
 import { IconDownload } from '../components/Icons';
 import { ScreenHeader } from '../components/ScreenHeader';
-import { getAvailableScenarioInputs, getSimulatorProjects, getSpend, runScenario } from '../data/api';
+import { getSimulatorProjects, getSpend, runScenario } from '../data/api';
 import type { SimulatorInput, SimulatorOutput, SpendRow } from '../data/types';
 import { formatMoney, formatMoneyDelta, formatWeekDelta } from '../lib/format';
 import { EASE_GLASS, snap } from '../lib/motion';
@@ -47,30 +47,66 @@ type State =
  */
 const MIN_CALC_MS = 950;
 
-const COUNTS = [1, 2, 3];
+/** Stable empty list — see the note where `projects` is derived. */
+const NO_PROJECTS: string[] = [];
+
+/**
+ * The fixture assumed small product squads, where moving one person matters.
+ * Real Apache components carry 60–290 contributors each, so a 1-engineer move
+ * is a rounding error on the throughput. These sizes produce a delta big
+ * enough to read while staying well inside what the source can spare.
+ */
+const COUNTS = [5, 10, 25];
 
 export function SimulatorView() {
   const projectsAsync = useAsync<string[]>(getSimulatorProjects, []);
   const spend = useAsync<SpendRow[]>(getSpend, []);
 
-  const projects = projectsAsync.status === 'ready' ? projectsAsync.data : [];
+  // A shared constant, not a fresh `[]` per render: this array is a
+  // dependency of the seeding effect below, and a new identity every render
+  // would re-run it every render.
+  const projects = projectsAsync.status === 'ready' ? projectsAsync.data : NO_PROJECTS;
   const spendRows = spend.status === 'ready' ? spend.data : null;
   const palette = useMemo(
     () => (spendRows ? buildProjectPalette(spendRows) : new Map()),
     [spendRows],
   );
 
-  const available = useMemo(() => getAvailableScenarioInputs(), []);
-  const reference = available[0];
-
-  const [source, setSource] = useState(reference.sourceProject);
-  const [dest, setDest] = useState(reference.destProject);
-  const [count, setCount] = useState(reference.engineerCount);
+  // The component list is fetched, so there is no scenario to point at on the
+  // first render. Empty strings until it lands, then seeded below — the old
+  // code read available[0] from a hard-coded fixture list, which is undefined
+  // now that the backend forecasts any pair it has observed delivery for.
+  const [source, setSource] = useState('');
+  const [dest, setDest] = useState('');
+  const [count, setCount] = useState(5);
   const [state, setState] = useState<State>({ phase: 'idle' });
 
+  useEffect(() => {
+    if (projects.length >= 2) {
+      setSource((s) => (s && projects.includes(s) ? s : projects[0]));
+      setDest((d) => (d && projects.includes(d) ? d : projects[1]));
+    }
+  }, [projects]);
+
+  /** A few real openers, built from the components that actually carry spend. */
+  const available = useMemo<SimulatorInput[]>(() => {
+    if (projects.length < 2) return [];
+    const pairs: SimulatorInput[] = [
+      { sourceProject: projects[0], destProject: projects[1], engineerCount: 5 },
+      { sourceProject: projects[1], destProject: projects[0], engineerCount: 5 },
+    ];
+    if (projects.length >= 3) {
+      pairs.push({ sourceProject: projects[0], destProject: projects[2], engineerCount: 12 });
+    }
+    return pairs;
+  }, [projects]);
+
   const input: SimulatorInput = { sourceProject: source, destProject: dest, engineerCount: count };
-  const hasForecast = available.some((a) => sameInput(a, input));
   const sameProject = source === dest;
+  // The backend forecasts any pair with observed delivery on both sides and
+  // returns a 422 with a reason when it cannot, so the UI no longer needs to
+  // guess in advance which combinations exist.
+  const hasForecast = !sameProject && source !== '' && dest !== '';
 
   const run = useCallback(async (next: SimulatorInput) => {
     setState({ phase: 'calculating', input: next });

@@ -15,9 +15,16 @@
 
 rate_card:
   # ------------------------------------------------------------------
-  # FILL THESE THREE IN. Seeding refuses to run until you do — the
-  # citation is rendered on screen next to the money, and a blank one
-  # turns a cited figure into an invented one.
+  # ONE publisher, FOUR pages — one per level, each with its own sample
+  # size recorded beside the band below. That is the point: a judge can
+  # open four URLs and re-derive every hourly figure on screen. It is
+  # stronger than mapping the percentiles of a single distribution onto
+  # band names, because PayScale defines the level, we do not.
+  #
+  # KNOWN BIAS, SAY IT ON THE SLIDE: PayScale is self-reported and weighted
+  # toward the all-India market including IT services, so these sit BELOW
+  # what a product multinational pays. Our spend figures are therefore
+  # conservative-low — waste is at least this expensive, probably more.
   # ------------------------------------------------------------------
   source:
     publisher: "PayScale India — Software Engineer salary research, by level"
@@ -87,16 +94,20 @@ band_inference:
 
 ci_cost:
   # ------------------------------------------------------------------
-  # FILL THESE IN. CI waste refuses to price a rupee figure without them —
-  # same contract as rate_card above. runner-minutes themselves are always
-  # computed and returned; only the currency conversion is gated.
+  # Machine time, not engineer time — so this is priced at the published
+  # runner rate, never at a salary band. Standard Linux 2-core (x64) is the
+  # runner class Apache CI uses for the overwhelming majority of jobs.
+  #
+  # $0.006/min x 95.21 INR/USD = 0.57126 INR/min. The FX rate is the same
+  # one config/ai_rates.yaml uses, deliberately: two different USD->INR
+  # rates in one database means two costs for the same minute.
   # ------------------------------------------------------------------
   source:
-    publisher: ""      # e.g. "GitHub Actions pricing page"
-    url: ""
-    retrieved: ""      # YYYY-MM-DD
+    publisher: "GitHub Docs — About billing for GitHub Actions (standard Linux 2-core x64, $0.006/min); converted at 95.21 INR/USD, Frankfurter API (ECB reference rates), rate dated 2026-08-07"
+    url: "https://docs.github.com/en/billing/managing-billing-for-your-products/about-billing-for-github-actions"
+    retrieved: "2026-08-09"
   currency: INR
-  cost_per_runner_minute: null
+  cost_per_runner_minute: 0.57126
 
 carbon:
   # ------------------------------------------------------------------

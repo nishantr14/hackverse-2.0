@@ -30,6 +30,7 @@ from app.cost.rate_card import (
     build_rates,
     citation,
     hourly_from_annual,
+    is_placeholder,
     load_config,
 )
 
@@ -159,13 +160,31 @@ def test_the_shipped_config_parses_and_has_every_band():
     assert set(cfg["rate_card"]["bands"]) == set(BANDS)
 
 
-def test_the_shipped_config_is_filled_in_and_builds_four_real_rates():
-    """config/rates.yaml now carries a real citation (PayScale India, per
-    level). If this ever starts raising RateCardError again, the config
-    regressed to a placeholder — check config/rates.yaml."""
+def test_the_shipped_config_is_cited_and_usable():
+    """This replaces an earlier test that asserted the shipped config still
+    had a BLANK citation, whose docstring said to delete it once someone
+    filled the citation in. It has been filled in, so the invariant worth
+    holding flipped: the card must now build, and every figure on it must
+    carry a real source.
+
+    The fail-closed behaviour itself is not lost — the tests above still
+    prove a blank or placeholder citation refuses to seed.
+    """
     rates = build_rates(load_config())
-    assert [r.role_band for r in rates] == list(BANDS)
-    assert all(r.source and r.hourly > 0 for r in rates)
+
+    assert {r.role_band for r in rates} == set(BANDS)
+    for rate in rates:
+        assert rate.source.strip(), f"{rate.role_band} has no source string"
+        assert "http" in rate.source, f"{rate.role_band}'s source carries no URL"
+        assert not is_placeholder(rate.source)
+        assert rate.hourly > 0
+        assert rate.annual > 0
+
+    # Ascending seniority. A card where a senior costs less than a mid is a
+    # transposed number, and it would price every case slightly wrong in a
+    # way no total would reveal.
+    hourly = [r.hourly for r in sorted(rates, key=lambda r: BANDS.index(r.role_band))]
+    assert hourly == sorted(hourly), f"bands are not ascending: {hourly}"
 
 
 # --- band inference: the rule ---------------------------------------------

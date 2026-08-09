@@ -90,7 +90,7 @@ export function ProcessView() {
           they burn <Figure>{formatPercent(worst.shareOfCost, 0)}</Figure> of the money.
         </>
       ),
-      sub: `${items} work items went from first commit to deploy this quarter. They took three different routes, and the routes did not cost the same.`,
+      sub: `${items} work items went from first commit to deploy in the last 12 months. They took three different routes, and the routes did not cost the same.`,
     };
   }
 
@@ -197,6 +197,19 @@ export function ProcessView() {
                   onActiveEdge={setActiveEdge}
                 />
               </div>
+              {/* Say what is off screen. A filtered map that does not admit
+                  it is filtered is just a wrong map. */}
+              {data.coverage && (
+                <p className="mt-5 border-t pt-4 text-[12px] leading-relaxed text-[var(--text-secondary)]"
+                   style={{ borderColor: 'var(--border)' }}>
+                  Showing the {data.coverage.transitionsShown} costliest of{' '}
+                  {data.coverage.transitionsTotal} transitions —{' '}
+                  <strong className="text-[var(--text-primary)]">
+                    {Math.round(data.coverage.costShare * 100)}% of all transition cost
+                  </strong>
+                  . {data.coverage.note}
+                </p>
+              )}
             </GlassCard>
 
             {/* supporting detail — the same three routes as numbers, so the
@@ -207,7 +220,7 @@ export function ProcessView() {
                   What each route is worth
                 </h2>
                 <p className="text-[12.5px] text-[var(--text-secondary)]">
-                  {items} work items took one of three routes this quarter.
+                  {items} work items took one of three routes in the last 12 months.
                 </p>
               </div>
               <div className="mt-5 grid gap-x-8 gap-y-5 sm:grid-cols-3">

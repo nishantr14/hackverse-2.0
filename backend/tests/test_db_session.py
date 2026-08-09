@@ -158,6 +158,11 @@ def test_no_test_deletes_real_rows_unscoped():
     )
     offenders = []
     for path in Path(__file__).parent.glob("test_*.py"):
+        # The immutability suite attempts unscoped deletes ON PURPOSE and
+        # asserts every one of them is refused. Those statements remove
+        # nothing — that is the thing they prove.
+        if path.name == "test_raw_payload_immutable.py":
+            continue
         tree = ast.parse(path.read_text(encoding="utf-8"))
         # Docstrings talk ABOUT these statements — including this one — so
         # scan executable string literals only.

@@ -64,6 +64,20 @@ APP_ROLE_GRANTS: frozenset[str] = frozenset(
         "v_ci_waste_minutes",
         "v_rework_cost",
         "v_backlog_time_full",
+        # Added by migrations/005_spend_and_capacity_views.sql. v_case_spend
+        # is per work item — the same grain the frozen schema already grants
+        # via v_case_cost — and v_component_capacity carries the k floor on
+        # its cost column exactly as v_spend_by_component does.
+        "v_case_spend",
+        "v_component_capacity",
+        # Added by migrations/006_variant_class_views.sql. Case-level
+        # classification and cost-weighted edges; no actor_hash anywhere.
+        "v_variant_class",
+        "v_edges_by_variant",
+        "v_variant_class_summary",
+        # Added by migrations/007_waste_by_project.sql. Detector output at
+        # (repo, component) grain; aggregates only.
+        "v_waste_by_project",
     }
 )
 
