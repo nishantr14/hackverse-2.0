@@ -111,6 +111,15 @@ export interface SimulatorOutput {
   confidencePercent?: number;
   rampUpPenaltyApplied: boolean;
   rampUpNote?: string | null;
+  /**
+   * False when the components have no observed rate to price against, in which
+   * case `netCostRupees` is a delivery figure only and `priceNote` says why.
+   * The backend has always sent both; they were missing from this contract,
+   * which meant a screen could render an unpriced scenario as a priced one.
+   */
+  priced: boolean;
+  /** Null when the scenario priced cleanly — the backend sends it that way. */
+  priceNote: string | null;
 }
 
 export interface SimulatorScenario {
@@ -230,4 +239,117 @@ export interface WorkforceFixture {
   requirement: WorkforceRequirement;
   recommendations: Recommendation[];
   impact: ProjectedImpact;
+  openings: Opening[];
+  candidates: Candidate[];
+  profile: WorkforceProfile;
 }
+
+/* ---------------------------------------------------------------------------
+ * ROLE-SEPARATED WORKFORCE
+ *
+ * Two audiences, one data layer, and the split is a privacy control rather
+ * than a navigation convenience: an employee sees their own volunteered
+ * profile and openings they might want; a director sees candidates ranked
+ * against one opening. Neither view is derived from the event log.
+ *
+ * Everything below is STILL the volunteered layer. `Candidate.currentComponent`
+ * is where the employee SAID they work, not something we observed about them —
+ * that distinction is what lets it be used as a simulator input without
+ * joining a person to `actor_hash`.
+ * ------------------------------------------------------------------------- */
+
+/** Roles are a demo affordance, not authentication. See lib/role.tsx. */
+export type Role = 'employee' | 'director';
+
+/**
+ * The employee's own record. Extends the preference form rather than replacing
+ * it, so everything already reading `EmployeePreferences` keeps working.
+ */
+export interface WorkforceProfile extends EmployeePreferences {
+  displayName: string;
+  primaryRole: string;
+  experienceYears: number;
+  skills: string[];
+  /** Components the employee said they want to work on. */
+  preferredComponents: string[];
+  currentLocation: string;
+  preferredLocations: string[];
+  openToRelocation: boolean;
+  preferredRelocationLocations: string[];
+  certifications: string[];
+  /** Free text — "From 1 March", "Immediately", "Not currently available". */
+  availableFrom: string;
+}
+
+/** An opening a director is staffing. */
+export interface Opening extends WorkforceRequirement {
+  openingId: string;
+  /** Where the work sits, for relocation feasibility. */
+  location: string;
+  /**
+   * The REAL component key `/simulate` accepts, e.g. "apache/kafka/clients".
+   * This is what lets a reallocation be priced by the live backend instead of
+   * a made-up number.
+   */
+  simulateKey: string;
+}
+
+export type Workload = 'light' | 'normal' | 'heavy';
+
+/**
+ * One signed term in a fit score.
+ *
+ * NOT SHAP. There is no trained model behind the workforce layer, so there are
+ * no Shapley values to report. These are the weighted terms of a stated rule
+ * over volunteered fields — additive and inspectable, which is why they can be
+ * shown as a breakdown at all. The UI must label them as such; if a real
+ * attribution method ever lands, this shape is what it fills in.
+ */
+export interface FitContribution {
+  label: string;
+  /** Signed percentage points. Positive helps the fit, negative hurts it. */
+  points: number;
+  basis: 'volunteered' | 'requirement' | 'assumption';
+}
+
+/** A recommendation plus what a staffing decision actually needs. */
+export interface Candidate extends Recommendation {
+  candidateId: string;
+  primaryRole: string;
+  experienceYears: number;
+  currentLocation: string;
+  /** Volunteered, and a real `/simulate` key — the reallocation's source. */
+  currentComponent: string;
+  currentComponentLabel: string;
+  openToRelocation: boolean;
+  preferredLocations: string[];
+  currentWorkload: Workload;
+  contributions: FitContribution[];
+}
+
+/**
+ * The four costs a reallocation carries that the event log cannot know.
+ *
+ * Every one is an ASSUMPTION the director types in. None is observed, none is
+ * benchmarked, and the UI says so beside them — they are the difference
+ * between "the simulator says this move is cheap" and "this move is cheap".
+ */
+export interface RelocationAssumptions {
+  relocationPackage: number;
+  temporaryAccommodation: number;
+  travel: number;
+  /**
+   * Weeks of ramp-up ON TOP of the simulator's own ramp-up penalty, which is
+   * already priced inside `SimulatorOutput.netCostRupees`. Kept separate so
+   * the two are never silently added twice.
+   */
+  extraRampUpWeeks: number;
+}
+
+export type RelocationFeasibility =
+  | 'not-required'
+  | 'preferred'
+  | 'acceptable'
+  | 'not-opted-in';
+
+export type Verdict = 'proceed' | 'do-not-proceed';

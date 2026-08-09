@@ -2,7 +2,7 @@ import { AnimatePresence, motion } from 'framer-motion';
 import { useId, useState } from 'react';
 import { EASE_GLASS } from '../lib/motion';
 import { SHIFT_LABEL, WEEKDAY_LABEL, WORK_STYLE_LABEL } from '../lib/workforce';
-import type { Recommendation } from '../data/types';
+import type { Recommendation, RecommendationEvidence } from '../data/types';
 import { GlassCard } from './GlassCard';
 import { IconCheck, IconChevron } from './Icons';
 
@@ -67,6 +67,47 @@ function EvidenceGroup({ title, items }: { title: string; items: string[] }) {
     </div>
   );
 }
+
+/**
+ * The evidence disclosure, split out so the director's richer candidate card
+ * shows exactly the same four groups. Two components rendering "the evidence"
+ * differently would be a way for one of them to quietly show less.
+ */
+export function EvidencePanel({ ev }: { ev: RecommendationEvidence }) {
+  return (
+    <div
+      className="grid gap-6 rounded-xl border p-5 sm:grid-cols-2"
+      style={{ borderColor: 'var(--border)', background: 'rgb(19 23 34 / 0.6)' }}
+    >
+      <EvidenceGroup
+        title="From the resume"
+        items={[...ev.resume.projects, ...ev.resume.experience]}
+      />
+      <EvidenceGroup title="Technical skills on file" items={ev.resume.skills} />
+      <EvidenceGroup
+        title="What the employee told us"
+        items={[
+          `Preferred shift: ${SHIFT_LABEL[ev.preferences.preferredShift]}`,
+          `Works best: ${WORK_STYLE_LABEL[ev.preferences.workStyle]}`,
+          `Available: ${ev.preferences.availability.map((d) => WEEKDAY_LABEL[d]).join(', ')}`,
+        ]}
+      />
+      <EvidenceGroup
+        title="What the opening needs"
+        items={[
+          `Skills: ${ev.requirement.requiredSkills.join(', ')}`,
+          `Shift: ${SHIFT_LABEL[ev.requirement.requiredShift]}`,
+          `Days: ${ev.requirement.requiredAvailability.map((d) => WEEKDAY_LABEL[d]).join(', ')}`,
+        ]}
+      />
+      <div className="sm:col-span-2">
+        <EvidenceGroup title="Policy applied" items={ev.policies} />
+      </div>
+    </div>
+  );
+}
+
+export { Pill };
 
 export function RecommendationCard({ rec, rank }: { rec: Recommendation; rank: number }) {
   const [open, setOpen] = useState(false);
@@ -156,34 +197,8 @@ export function RecommendationCard({ rec, rank }: { rec: Recommendation; rank: n
             transition={{ duration: 0.3, ease: EASE_GLASS }}
             style={{ overflow: 'hidden' }}
           >
-            <div
-              className="mt-4 grid gap-6 rounded-xl border p-5 sm:grid-cols-2"
-              style={{ borderColor: 'var(--border)', background: 'rgb(19 23 34 / 0.6)' }}
-            >
-              <EvidenceGroup
-                title="From the resume"
-                items={[...ev.resume.projects, ...ev.resume.experience]}
-              />
-              <EvidenceGroup title="Technical skills on file" items={ev.resume.skills} />
-              <EvidenceGroup
-                title="What the employee told us"
-                items={[
-                  `Preferred shift: ${SHIFT_LABEL[ev.preferences.preferredShift]}`,
-                  `Works best: ${WORK_STYLE_LABEL[ev.preferences.workStyle]}`,
-                  `Available: ${ev.preferences.availability.map((d) => WEEKDAY_LABEL[d]).join(', ')}`,
-                ]}
-              />
-              <EvidenceGroup
-                title="What the opening needs"
-                items={[
-                  `Skills: ${ev.requirement.requiredSkills.join(', ')}`,
-                  `Shift: ${SHIFT_LABEL[ev.requirement.requiredShift]}`,
-                  `Days: ${ev.requirement.requiredAvailability.map((d) => WEEKDAY_LABEL[d]).join(', ')}`,
-                ]}
-              />
-              <div className="sm:col-span-2">
-                <EvidenceGroup title="Policy applied" items={ev.policies} />
-              </div>
+            <div className="mt-4">
+              <EvidencePanel ev={ev} />
             </div>
           </motion.div>
         )}

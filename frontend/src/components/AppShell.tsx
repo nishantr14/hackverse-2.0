@@ -1,7 +1,8 @@
 import { motion } from 'framer-motion';
 import type { ReactNode } from 'react';
-import { NavLink, useLocation } from 'react-router-dom';
+import { NavLink, useLocation, useNavigate } from 'react-router-dom';
 import { snap } from '../lib/motion';
+import { ROLE_LABEL, useRole } from '../lib/role';
 import {
   IconDatabase,
   IconLock,
@@ -36,6 +37,32 @@ const WORKFORCE_NAV = {
   Icon: IconWorkforce,
   hint: 'Who fits the work',
 } as const;
+
+/**
+ * The employee's whole app. Two items, no numbering, and deliberately no link
+ * to anything built on the event log — the router enforces that too, so this
+ * list is the honest shape of what they can reach rather than a filtered view
+ * of a bigger menu.
+ */
+const EMPLOYEE_NAV = [
+  {
+    to: '/me/profile',
+    label: 'My profile',
+    Icon: IconWorkforce,
+    hint: 'Skills and preferences',
+  },
+  {
+    to: '/me/opportunities',
+    label: 'Opportunities',
+    Icon: IconSimulator,
+    hint: 'Openings you may fit',
+  },
+] as const;
+
+const EMPLOYEE_NOTE = {
+  data: 'Your own volunteered profile — nothing observed.',
+  privacy: 'Never joined to engineering activity. No cost or productivity figure exists for you.',
+};
 
 /**
  * The footer note is per-route because a single global one would be false on
@@ -136,9 +163,59 @@ function NavItem({
   );
 }
 
+/**
+ * Who is looking, and the way back out.
+ *
+ * Sits at the top of the sidebar rather than in a corner because it changes
+ * what the whole app is — a visitor who forgets which role they are in will
+ * misread every screen below it.
+ */
+function RoleBadge() {
+  const { role, clearRole } = useRole();
+  const navigate = useNavigate();
+
+  if (!role) return null;
+
+  return (
+    <div className="px-3">
+      <div
+        className="flex items-center justify-between gap-2 rounded-lg border px-2.5 py-2"
+        style={{ borderColor: 'var(--border)', background: 'var(--bg-raised)' }}
+      >
+        <span className="min-w-0 leading-tight">
+          <span className="block text-[9.5px] tracking-[0.14em] text-[var(--text-muted)] uppercase">
+            Signed in as
+          </span>
+          <span className="block truncate text-[12px] font-medium text-[var(--text-primary)]">
+            {ROLE_LABEL[role]}
+          </span>
+        </span>
+        <button
+          type="button"
+          onClick={() => {
+            clearRole();
+            navigate('/', { replace: true });
+          }}
+          className="shrink-0 rounded-md border px-2 py-1 text-[11px] transition-colors"
+          style={{ borderColor: 'var(--border)', color: 'var(--text-secondary)' }}
+        >
+          Switch
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export function AppShell({ children }: { children: ReactNode }) {
   const { pathname } = useLocation();
-  const note = pathname === WORKFORCE_NAV.to ? WORKFORCE_NOTE : ANALYTICS_NOTE;
+  const { role } = useRole();
+  const isEmployee = role === 'employee';
+
+  const note = isEmployee
+    ? EMPLOYEE_NOTE
+    : pathname === WORKFORCE_NAV.to
+      ? WORKFORCE_NOTE
+      : ANALYTICS_NOTE;
 
   return (
     <div className="grain flex min-h-screen">
@@ -157,21 +234,32 @@ export function AppShell({ children }: { children: ReactNode }) {
         className="sticky top-0 z-10 flex h-screen w-[236px] shrink-0 flex-col justify-between overflow-y-auto border-r py-6"
         style={{ borderColor: 'var(--border)', background: 'rgb(11 14 20 / 0.6)' }}
       >
-        <div className="flex flex-col gap-7">
+        <div className="flex flex-col gap-5">
           <Wordmark />
+          <RoleBadge />
 
-          <ul className="flex flex-col gap-0.5 px-2">
-            {NAV.map((item) => (
-              <NavItem key={item.to} {...item} active={pathname === item.to} />
-            ))}
-          </ul>
-
-          <div className="flex flex-col gap-2">
-            <div className="mx-3 border-t" style={{ borderColor: 'var(--border)' }} />
+          {isEmployee ? (
             <ul className="flex flex-col gap-0.5 px-2">
-              <NavItem {...WORKFORCE_NAV} active={pathname === WORKFORCE_NAV.to} />
+              {EMPLOYEE_NAV.map((item) => (
+                <NavItem key={item.to} {...item} active={pathname === item.to} />
+              ))}
             </ul>
-          </div>
+          ) : (
+            <div className="flex flex-col gap-5">
+              <ul className="flex flex-col gap-0.5 px-2">
+                {NAV.map((item) => (
+                  <NavItem key={item.to} {...item} active={pathname === item.to} />
+                ))}
+              </ul>
+
+              <div className="flex flex-col gap-2">
+                <div className="mx-3 border-t" style={{ borderColor: 'var(--border)' }} />
+                <ul className="flex flex-col gap-0.5 px-2">
+                  <NavItem {...WORKFORCE_NAV} active={pathname === WORKFORCE_NAV.to} />
+                </ul>
+              </div>
+            </div>
+          )}
         </div>
 
         <div className="flex flex-col gap-3">

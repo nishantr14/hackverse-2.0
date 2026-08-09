@@ -19,7 +19,9 @@
 // section at the foot of this file.
 import workforceFixture from '../mock-data/workforce.json';
 import type {
+  Candidate,
   EmployeePreferences,
+  Opening,
   ProcessGraph,
   ProjectedImpact,
   Recommendation,
@@ -30,6 +32,7 @@ import type {
   WasteRow,
   WasteType,
   WorkforceFixture,
+  WorkforceProfile,
   WorkforceRequirement,
 } from './types';
 
@@ -171,10 +174,34 @@ export function getProcessGraph(): Promise<ProcessGraph> {
 
 interface ComponentList {
   projects: string[];
+  detail: ComponentDetail[];
+}
+
+/**
+ * Per-component headcount and throughput, straight from the event log.
+ *
+ * OBSERVED, and the reason the workforce screen can show a real before/after
+ * headcount instead of inventing one. It is an aggregate over a component —
+ * "264 engineers touched apache/kafka/clients" — and carries no identity, so
+ * putting it on the same screen as a named candidate joins nothing.
+ */
+export interface ComponentDetail {
+  key: string;
+  project: string;
+  component: string;
+  engineers: number;
+  openItems: number;
+  itemsPerWeek: number;
+  cost: number | null;
+  suppressed: boolean;
 }
 
 export function getSimulatorProjects(): Promise<string[]> {
   return get<ComponentList>('/simulate/components?limit=40').then((d) => d.projects);
+}
+
+export function getComponentDetail(): Promise<ComponentDetail[]> {
+  return get<ComponentList>('/simulate/components?limit=40').then((d) => d.detail);
 }
 
 export function runScenario(input: SimulatorInput): Promise<SimulatorOutput> {
@@ -287,4 +314,90 @@ export function getRecommendations(): Promise<Recommendation[]> {
  */
 export function getProjectedImpact(): Promise<ProjectedImpact> {
   return settle(workforce.impact, 500);
+}
+
+/* ------------------------------------------------- role-separated workforce
+ *
+ * Still the volunteered layer, still fixture-backed, and deliberately so: the
+ * resume-ingestion and recommender services do not exist, and backing these
+ * with the analytics layer instead would mean joining a named person to
+ * `actor_hash` — the one thing the architecture forbids. Fixtures are the
+ * honest option here, not the lazy one.
+ *
+ * THE EXCEPTION IS THE REALLOCATION ITSELF. `simulateReallocation` goes to the
+ * live POST /simulate, because a component-to-component move is a question
+ * about components, not about people: the source key is where the employee
+ * SAID they work, and no identity crosses into the request. Those numbers are
+ * real.
+ *
+ *   getMyProfile        ->  GET  /workforce/profile
+ *   saveMyProfile       ->  PUT  /workforce/profile
+ *   getOpenings         ->  GET  /workforce/openings
+ *   getCandidates       ->  POST /workforce/recommend
+ *   simulateReallocation -> POST /simulate            (REAL, already exists)
+ * ------------------------------------------------------------------------- */
+
+/**
+ * Survives a reload so the demo's save actually looks like it saved.
+ * localStorage, not a server, and the screen says as much.
+ */
+const PROFILE_KEY = 'esi.workforce.profile';
+
+export function getMyProfile(): Promise<WorkforceProfile> {
+  try {
+    const raw = localStorage.getItem(PROFILE_KEY);
+    if (raw) return settle({ ...workforce.profile, ...JSON.parse(raw) } as WorkforceProfile);
+  } catch {
+    // Corrupt or unavailable storage falls back to the seed rather than
+    // failing the screen — a profile form that will not open is useless.
+  }
+  return settle(workforce.profile);
+}
+
+export function saveMyProfile(profile: WorkforceProfile): Promise<SavePreferencesResult> {
+  if (!profile.employeeId) {
+    return Promise.reject(new Error('An employee identifier is required to save a profile.'));
+  }
+  try {
+    localStorage.setItem(PROFILE_KEY, JSON.stringify(profile));
+  } catch {
+    return Promise.reject(
+      new Error('This browser would not let us store the profile. Nothing was saved.'),
+    );
+  }
+  return settle({ saved: true, savedAt: new Date().toISOString() }, 600);
+}
+
+export function getOpenings(): Promise<Opening[]> {
+  return settle(workforce.openings);
+}
+
+/** Ranked against one opening. Sorted here so every consumer sees one order. */
+export function getCandidates(openingId: string): Promise<Candidate[]> {
+  const opening = workforce.openings.find((o) => o.openingId === openingId);
+  if (!opening) {
+    return Promise.reject(new Error(`No opening with id "${openingId}".`));
+  }
+  return settle(
+    [...workforce.candidates].sort((a, b) => b.match - a.match),
+    900,
+  );
+}
+
+/**
+ * The real one.
+ *
+ * Reuses `runScenario` rather than re-describing the endpoint — one caller of
+ * POST /simulate, so a change to the contract breaks in one place.
+ */
+export function simulateReallocation(
+  sourceComponent: string,
+  destComponent: string,
+  engineerCount = 1,
+): Promise<SimulatorOutput> {
+  return runScenario({
+    sourceProject: sourceComponent,
+    destProject: destComponent,
+    engineerCount,
+  });
 }
