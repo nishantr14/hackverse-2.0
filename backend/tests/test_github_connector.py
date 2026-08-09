@@ -20,6 +20,8 @@ import pytest
 
 from app.ingestion.github_connector import (
     MAX_PAGE_SIZE,
+    MIN_PAGE_SIZE,
+    PR_PAGE_SIZE,
     PR_QUERY,
     RUN_FIELDS,
     GitHubClient,
@@ -1026,14 +1028,14 @@ def test_a_page_that_never_arrives_whole_halves_the_page_size(clean_github_rows)
     def handler(request):
         size = json.loads(request.content)["variables"]["pageSize"]
         seen_sizes.append(size)
-        if size > 50:
+        if size > MIN_PAGE_SIZE:
             raise httpx.ReadError("peer closed connection without sending "
                                   "complete message body (incomplete chunked read)")
         return httpx.Response(200, json=graphql_page([pr_node(1)]))
 
     stats = _fetch(handler)
     assert stats.page_size_reductions >= 1
-    assert seen_sizes[-1] <= 50, "page size was never reduced"
+    assert seen_sizes[-1] <= MIN_PAGE_SIZE, "page size was never reduced"
     assert stats.pull_requests == 1, "the page was not re-fetched after halving"
 
 
@@ -1061,3 +1063,22 @@ def test_review_and_timeline_connections_are_not_capped_below_the_maximum():
             f"{connection} is capped at {match.group(1)}; GitHub allows "
             f"{MAX_PAGE_SIZE} and anything less silently drops the tail"
         )
+
+
+def test_a_gateway_timeout_halves_the_page_too(clean_github_rows):
+    """504 is GitHub saying it could not generate the response. Retrying is
+    the wrong move — it is the same "page too expensive" condition as a
+    truncated body, just stated honestly, and only asking for less cures it."""
+    seen_sizes = []
+
+    def handler(request):
+        size = json.loads(request.content)["variables"]["pageSize"]
+        seen_sizes.append(size)
+        if size > PR_PAGE_SIZE // 2:
+            return httpx.Response(504, text="gateway timeout")
+        return httpx.Response(200, json=graphql_page([pr_node(1)]))
+
+    stats = _fetch(handler)
+    assert stats.page_size_reductions >= 1
+    assert seen_sizes[-1] <= PR_PAGE_SIZE // 2
+    assert stats.pull_requests == 1
