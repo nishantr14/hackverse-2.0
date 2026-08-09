@@ -39,3 +39,7 @@ infra/docker-compose.override.yml
 
 # Cloned source repos — tens of MB each, re-clonable in seconds.
 data/repos/
+
+# Database dumps — shared out of band, never in the repo (20MB+, and a
+# database does not belong in git). See SETUP-FROM-DUMP.md.
+*.dump
