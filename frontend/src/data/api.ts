@@ -17,10 +17,6 @@
 // The four analytics fixtures are gone — those screens read the real backend
 // now. This one stays until the workforce services exist; see the WORKFORCE
 // section at the foot of this file.
-import processFixture from '../mock-data/process.json';
-import simulatorFixture from '../mock-data/simulator.json';
-import spendFixture from '../mock-data/spend.json';
-import wasteFixture from '../mock-data/waste.json';
 import workforceFixture from '../mock-data/workforce.json';
 import type {
   EmployeePreferences,
@@ -28,7 +24,6 @@ import type {
   ProjectedImpact,
   Recommendation,
   SavePreferencesResult,
-  SimulatorFixture,
   SimulatorInput,
   SimulatorOutput,
   SpendRow,
