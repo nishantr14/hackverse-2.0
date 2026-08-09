@@ -183,6 +183,24 @@ def test_ticket_key_falls_back_to_the_body_last():
     assert mg.resolve_case(node, "apache/kafka")[:2] == ("KAFKA-4242", "ticket_key")
 
 
+@pytest.mark.parametrize("junk_title", ["MINOR-1022: fix flaky test", "KIP-848: new protocol"])
+def test_a_junk_ticket_like_match_is_rejected_not_filed_as_a_case(junk_title):
+    """[A-Z]{2,10}-\\d+ matches far more than Jira keys — MINOR- is a commit
+    convention, KIP- is a design proposal, neither is a KAFKA/FLINK issue.
+    Filing one as a case glues unrelated PRs together under a fake ticket."""
+    node = {
+        "number": 5,
+        "repo": "apache/kafka",
+        "title": junk_title,
+        "headRefName": "fix-flaky",
+        "body": "",
+    }
+    work_item_id, case_source, ticket_key = mg.resolve_case(node, "apache/kafka")
+    assert case_source == "pr"
+    assert work_item_id == "apache/kafka#5"
+    assert ticket_key is None
+
+
 def test_closing_issue_is_the_second_rung(with_issue):
     mapped = mg.map_pull_request(with_issue)
     assert mapped.work_item["work_item_id"] == "apache/kafka#900010"
@@ -382,6 +400,27 @@ def test_bot_commit_author_is_dropped_not_mapped(review_rounds):
     mapped = mg.map_pull_request(review_rounds)
     assert not [e for e in mapped.events if e["activity"] == "commit"]
     assert mapped.bot_events_dropped == 1
+
+
+def test_commit_with_no_linked_github_account_records_actor_absent(review_rounds):
+    """A deleted account, or a git email that never mapped to a login, still
+    leaves a null resource — but an unexplained one is what a mapper that
+    silently dropped a human looks like."""
+    no_account_commit = {
+        "commit": {
+            "oid": "c-ghost",
+            "authoredDate": "2026-04-01T09:00:00Z",
+            "additions": 1,
+            "deletions": 0,
+            "changedFiles": 1,
+            "author": {"user": None},
+        }
+    }
+    review_rounds["commits"] = {"nodes": [no_account_commit]}
+    mapped = mg.map_pull_request(review_rounds)
+    commit_event = next(e for e in mapped.events if e["activity"] == "commit")
+    assert commit_event["actor_hash"] is None
+    assert commit_event["attrs"]["actor_absent"] == "unattributed"
 
 
 def test_commit_matching_the_merge_commit_oid_is_flagged_squash():

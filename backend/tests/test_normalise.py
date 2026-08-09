@@ -329,6 +329,29 @@ def test_every_null_actor_has_a_recorded_reason(conn):
     ).scalar() == 0
 
 
+def test_commit_events_from_prs_use_git_locals_event_id_scheme(conn):
+    """P2: commits fetched via the PR's own commits connection must converge
+    with git_local's event_id on (sha, authored_at), or the same physical
+    commit double-counts as two rows under two ids."""
+    from app.ingestion.git_local import event_id_for as git_event_id
+
+    if not _has_events(conn):
+        pytest.skip("event log is empty")
+    rows = conn.execute(
+        text(
+            """
+            SELECT event_id, attrs->>'sha' AS sha, ts FROM event_log
+             WHERE activity = 'commit' AND attrs->>'ingest_source' = 'github_graphql'
+             LIMIT 25
+            """
+        )
+    ).all()
+    if not rows:
+        pytest.skip("no PR-sourced commit events mapped yet")
+    for event_id, sha, ts in rows:
+        assert event_id == git_event_id(sha, ts), (sha, ts)
+
+
 def test_case_sequence_is_deterministic_and_dense(conn):
     """`step` must be 1..n with no gaps, or the ordering tiebreak is unstable
     and two runs of the variant miner disagree."""

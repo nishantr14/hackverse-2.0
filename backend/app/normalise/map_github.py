@@ -3,6 +3,22 @@ GitHub mapping — raw_payload -> work_item, event_log, ci_run. NO NETWORK.
 Owner: Dipen (normalise lane).
 Phase: Tier 0.
 
+*** NOT THE CANONICAL PIPELINE — DO NOT RUN AGAINST THE SHARED DATABASE. ***
+`app.normalise.event_log` (see README's "Building the canonical event log")
+is what actually built the data in this project's Postgres, is what
+`.claude/CLAUDE.md`/README document, and is what everything else reads.
+This module is a second, independent implementation of overlapping PR
+mapping that nothing else imports. Its event_id formula for reviews and
+timeline events differs from event_log.py's (digest embedded in the entity
+id here vs. a trailing hash component there), so running it against a
+database event_log.py has already populated does NOT converge via the usual
+on_conflict_do_nothing upsert — it silently writes a second, duplicate copy
+of every review/approved/changes_requested/review_requested/reopened event
+under different ids. This happened for real on 2026-08-09 (38,723 duplicate
+rows, since cleaned up) while porting P2's commit-mapping fix — see that
+commit's message. Until this module is either wired into the real pipeline
+or retired, treat it as a reference/prototype only.
+
     python -m app.normalise.map_github
     python -m app.normalise.map_github --repo apache/kafka --dry-run
 
@@ -90,8 +106,10 @@ from app.config import get_settings
 from app.db.models import Actor, CiRun, EventLog, RawPayload, WorkItem
 from app.db.session import write_session
 from app.ingestion.git_local import ROOT_COMPONENT, infer_band, infer_tenure
+from app.ingestion.projects import is_real_ticket
 from app.ingestion.pseudonymize import assert_no_identity
 from app.normalise.case_span import CaseSpan, SpanReport, span_days, summarise
+from app.normalise.event_log import absence_reason
 from sqlalchemy import bindparam, func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
@@ -288,7 +306,11 @@ def resolve_case(node: dict[str, Any], repo: str) -> tuple[str, str, str | None]
     point of decision #6.
     """
     key = ticket_key_from(node.get("title"), node.get("headRefName"), node.get("body"))
-    if key:
+    # `[A-Z]{2,10}-\d+` matches far more than Jira keys — KIP-909, CVE-2026,
+    # SHA-256, GPT-5 all match. is_real_ticket requires the project prefix to
+    # be the one this repo's Jira actually uses; the same guard git_local
+    # applies to a commit subject, applied here to a PR title/branch/body.
+    if key and is_real_ticket(key, repo):
         return key, "ticket_key", key
 
     for issue in _nodes(node.get("closingIssuesReferences")):
@@ -510,6 +532,21 @@ def map_pull_request(body: dict[str, Any], stats: Stats | None = None) -> Mapped
         if _is_bot(author):
             dropped += 1
             continue
+        attrs: dict[str, Any] = {
+            "sha": oid,
+            "pr": pr_ref,
+            "additions": commit.get("additions"),
+            "deletions": commit.get("deletions"),
+            "changed_files": commit.get("changedFiles"),
+            "is_squash_merge": bool(merge_commit) and oid == merge_commit,
+        }
+        # No linked GitHub account for this commit's author (deleted account,
+        # or a git email that never mapped to a login) — a null resource is
+        # fine, an unexplained one is what a mapper that dropped a human looks
+        # like. See event_log.absence_reason.
+        reason = absence_reason(author)
+        if reason:
+            attrs["actor_absent"] = reason
         events.append(
             {
                 "event_id": event_id_for(
@@ -520,14 +557,7 @@ def map_pull_request(body: dict[str, Any], stats: Stats | None = None) -> Mapped
                 "activity": "commit",
                 "ts": authored,
                 "source": EVENT_SOURCE,
-                "attrs": {
-                    "sha": oid,
-                    "pr": pr_ref,
-                    "additions": commit.get("additions"),
-                    "deletions": commit.get("deletions"),
-                    "changed_files": commit.get("changedFiles"),
-                    "is_squash_merge": bool(merge_commit) and oid == merge_commit,
-                },
+                "attrs": attrs,
             }
         )
 

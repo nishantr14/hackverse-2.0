@@ -661,6 +661,54 @@ def map_pull_requests(
             )
             stats.add(activity)
 
+        # P2: squash-merge collapses trunk history to one commit per PR
+        # (measured: avg 1.18 commits/work_item, median 1.0), leaving session
+        # inference nothing to cluster. github_connector.PR_QUERY now fetches
+        # each PR's own pre-squash commits; land them here.
+        for commit_node in (node.get("commits") or {}).get("nodes") or []:
+            if not commit_node:
+                continue
+            commit = commit_node.get("commit") or {}
+            oid = commit.get("oid")
+            ts = parse_ts(commit.get("authoredDate"))
+            if not oid or not ts:
+                continue
+            author_node = (commit.get("author") or {}).get("user")
+            if isinstance(author_node, dict) and author_node.get("is_bot"):
+                stats.skipped_bot_events += 1
+                continue
+            committer = note(actor_from(author_node), ts)
+            events.append(
+                {
+                    # Byte-identical to git_local.event_id_for on the same
+                    # (sha, authored_at) — see that function's docstring. A
+                    # commit git_local already saw on trunk (a non-squash
+                    # merge) converges onto that row via write_events'
+                    # on_conflict_do_update instead of duplicating; a commit
+                    # squashed away before it ever reached trunk has no
+                    # existing row and lands here for the first time.
+                    "event_id": event_id_for(
+                        "git_local", "commit", str(oid), "commit", ts.isoformat()
+                    ),
+                    "work_item_id": case_id,
+                    "actor_hash": committer,
+                    "activity": "commit",
+                    "ts": ts,
+                    "source": "github",
+                    "attrs": {
+                        "ingest_source": "github_graphql",
+                        "sha": oid,
+                        "pr_number": number,
+                        "additions": commit.get("additions"),
+                        "deletions": commit.get("deletions"),
+                        "changed_files": commit.get("changedFiles"),
+                        "is_squash_merge": bool(merge_sha) and oid == merge_sha,
+                        "actor_absent": absence_reason(author_node),
+                    },
+                }
+            )
+            stats.add("commit")
+
     stats.work_items += upsert_work_items(session, items)
     ensure_actors(session, actors_seen, stats)
     write_events(session, events)
