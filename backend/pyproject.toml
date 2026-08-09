@@ -12,6 +12,10 @@ dependencies = [
     "httpx>=0.27",
     "pandas>=2.2",
     "lightgbm>=4.5",
+    # Only used by app/cost/rate_card.py to read config/rates.yaml. Already
+    # present transitively via uvicorn[standard]; declared so it is not one
+    # `pip install` away from vanishing.
+    "pyyaml>=6.0",
 ]
 
 [project.optional-dependencies]
@@ -23,6 +27,18 @@ dev = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+# Without this section ruff has NO config anywhere in the repo, and its
+# first-party detection then depends on the directory you invoke it from:
+# run inside backend/ it sees app/ and sorts `from app...` as first-party;
+# run from the repo root it does not, and reports 24 I001 import-order
+# errors in the same untouched files. Worse, `--fix` from either end makes
+# the other end fail. Naming app explicitly makes both agree.
+[tool.ruff]
+target-version = "py311"
+
+[tool.ruff.lint.isort]
+known-first-party = ["app"]
 
 [build-system]
 requires = ["hatchling"]

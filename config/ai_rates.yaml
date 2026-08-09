@@ -1,0 +1,68 @@
+# =====================================================================
+# Synthetic AI token usage: prices, adoption curve, distribution shape.
+# Owner: Nishant (ingestion lane).
+#
+# THE TOKENS ARE SYNTHETIC. THE PRICES ARE NOT.
+#
+# Volumes here are modelled — no vendor gives us per-work-item token counts
+# for someone else's repository. The PRICES they are multiplied by come from
+# a published price list with a URL, exactly like the rate card, so the
+# arithmetic on screen is checkable even though the inputs are simulated.
+# The UI must badge this as modelled, never observed.
+# =====================================================================
+
+pricing:
+  # FILL THESE IN. Generation refuses to run until you do — an uncited
+  # price makes a synthetic token count look like a real invoice.
+  source:
+    publisher: ""      # e.g. "Anthropic pricing page"
+    url: ""            # the public price list
+    retrieved: ""      # YYYY-MM-DD
+
+  # cost_event.cost has no currency column, so everything in this database
+  # is one currency and the rate card is in INR. Token prices are published
+  # in USD, so the conversion is part of the citation, not a detail.
+  quote_currency: USD
+  report_currency: INR
+  usd_to_inr:
+    rate: null         # e.g. 84.0
+    source: ""         # where the rate came from, and when
+
+  vendor: ""           # the model name that appears in ai_usage.vendor
+  input_per_million: null
+  output_per_million: null
+
+adoption:
+  # Share of a sprint's work items that show ANY AI usage. Sprints are
+  # numbered 1..N oldest to newest, so this runs left to right in time.
+  #
+  # Logistic rather than linear: tool adoption in a team is a diffusion
+  # curve, flat then steep then saturating, and a straight line makes the
+  # earliest sprints look like adoption had already begun.
+  shape: logistic
+  start: 0.02          # floor, earliest sprints
+  end: 0.55            # ceiling, most recent sprint
+  midpoint: 0.65       # where the steep part sits, as a fraction of the timeline
+  steepness: 9.0
+
+  # Explicit per-sprint overrides win over the curve. Use for a demo where
+  # a specific sprint needs a specific number.
+  by_sprint: {}
+
+tokens:
+  # Long-tailed: most work items are a few thousand tokens of autocomplete,
+  # a few are someone pasting an entire file in forty times. A normal
+  # distribution here would put every work item near the mean and hide the
+  # long tail that makes the spend interesting.
+  distribution: lognormal
+  input_median: 12000
+  input_sigma: 1.1
+  # Output is a fraction of input, itself jittered — models emit far less
+  # than they read.
+  output_ratio_median: 0.35
+  output_ratio_sigma: 0.5
+  # Some work items get several sessions.
+  sessions_lambda: 1.4
+
+# Fixed so two people regenerating get byte-identical rows.
+seed: 20260809

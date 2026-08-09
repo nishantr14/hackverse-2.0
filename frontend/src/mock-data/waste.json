@@ -1,0 +1,51 @@
+[
+  {
+    "type": "rework",
+    "project": "Payments",
+    "component": "checkout-service",
+    "amountRupees": 1700000,
+    "detail": "Code authored then deleted or rewritten within 30 days — 13.8% of the quarter's work in this component produced nothing that still exists."
+  },
+  {
+    "type": "rework",
+    "project": "Delta",
+    "component": "notification-engine",
+    "amountRupees": 1400000,
+    "detail": "Recurring rewrite cycles on the same file paths across three sprints."
+  },
+  {
+    "type": "latency",
+    "project": "Payments",
+    "component": "checkout-service",
+    "amountRupees": 900000,
+    "detail": "Salary burned while finished work waited for review. Median wait 4.2 days."
+  },
+  {
+    "type": "latency",
+    "project": "Auth",
+    "component": "sso-gateway",
+    "amountRupees": 400000,
+    "detail": "Median review wait 2.6 days, driven by a single approver bottleneck."
+  },
+  {
+    "type": "meeting",
+    "project": "Delta",
+    "component": null,
+    "amountRupees": 240000,
+    "detail": "Duration x attendees x loaded rate, per month. One 38-person sync accounts for 31% of this figure."
+  },
+  {
+    "type": "keyPerson",
+    "project": "Payments",
+    "component": "reconciliation",
+    "amountRupees": 3400000,
+    "detail": "One engineer owns 71% of recent changes in this component. In-flight work is exposed if they are unavailable."
+  },
+  {
+    "type": "keyPerson",
+    "project": "Auth",
+    "component": "session-service",
+    "amountRupees": 1100000,
+    "detail": "One engineer owns 58% of recent changes in this component."
+  }
+]

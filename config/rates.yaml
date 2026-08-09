@@ -1,0 +1,76 @@
+# =====================================================================
+# Rate card and band-inference thresholds.
+# Owner: Diljit (cost lane).
+#
+# TWO SEPARATE THINGS, AND A JUDGE WILL SEPARATE THEM.
+#
+#   rate_card       PUBLIC and CITED. The hourly figures come from a
+#                   published compensation source with a URL on screen.
+#   band_inference  INFERRED and LABELLED. Which band an actor sits in is a
+#                   stated rule over contribution history, never a fact
+#                   about a person. actor.band_basis is 'inferred', always.
+#
+# Nothing here is code. Change a number, re-run, done.
+# =====================================================================
+
+rate_card:
+  # ------------------------------------------------------------------
+  # FILL THESE THREE IN. Seeding refuses to run until you do — the
+  # citation is rendered on screen next to the money, and a blank one
+  # turns a cited figure into an invented one.
+  # ------------------------------------------------------------------
+  source:
+    publisher: ""      # e.g. "Levels.fyi India Software Engineer report"
+    url: ""            # the public page the medians come from
+    retrieved: ""      # YYYY-MM-DD, the day you pulled the figures
+
+  currency: INR
+
+  # Fully-loaded multiplier: salary plus employer's cost of employment
+  # (benefits, equipment, facilities, employer contributions). State it on
+  # the slide — an unloaded rate understates true spend by roughly a third.
+  loading: 1.30
+
+  # hourly = (annual * loading) / (working_days * hours_per_day)
+  # 230 = 365 - 104 weekend days - ~10 public holidays - ~21 leave days.
+  working_days: 230
+  hours_per_day: 8
+
+  # Annual medians, in `currency`, BEFORE the loading multiplier.
+  # Leave null and seeding will tell you which band is missing.
+  bands:
+    junior: {annual: null}
+    mid: {annual: null}
+    senior: {annual: null}
+    staff: {annual: null}
+
+band_inference:
+  # ------------------------------------------------------------------
+  # The stated rule. First band whose conditions all hold, in this order.
+  # Every condition is a floor: the actor must meet or exceed it.
+  #
+  # `tenure_months` is the span from an actor's first event to their last,
+  # `reviews` counts reviews given, `merged` counts distinct work items
+  # where this actor AUTHORED the commit that was merged.
+  #
+  # Run `python -m app.cost.band_inference --dry-run` before changing
+  # these. It prints the distribution these produce and the actor count at
+  # every candidate value, so the choice is yours and it is on the record.
+  # ------------------------------------------------------------------
+  thresholds:
+    staff:
+      tenure_months: 24
+      reviews: 100
+    senior:
+      tenure_months: 12
+      merged: 30
+    mid:
+      tenure_months: 6
+    # junior is the fallthrough and takes no conditions.
+
+  # Printed beside the result so the gap is visible rather than argued.
+  target_distribution:
+    staff: 10
+    senior: 30
+    mid: 40
+    junior: 20

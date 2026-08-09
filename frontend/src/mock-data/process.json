@@ -1,0 +1,25 @@
+{
+  "nodes": [
+    { "id": "commit", "label": "Commit" },
+    { "id": "review", "label": "Review" },
+    { "id": "changes_requested", "label": "Changes requested" },
+    { "id": "merge", "label": "Merge" },
+    { "id": "deploy", "label": "Deploy" }
+  ],
+  "edges": [
+    { "from": "commit", "to": "review", "frequency": 412, "costRupees": 1850000, "variant": "happy_path" },
+    { "from": "review", "to": "merge", "frequency": 248, "costRupees": 720000, "variant": "happy_path" },
+    { "from": "merge", "to": "deploy", "frequency": 248, "costRupees": 310000, "variant": "happy_path" },
+    { "from": "review", "to": "changes_requested", "frequency": 164, "costRupees": 1130000, "variant": "rework_loop" },
+    { "from": "changes_requested", "to": "review", "frequency": 164, "costRupees": 980000, "variant": "rework_loop" },
+    { "from": "review", "to": "changes_requested", "frequency": 41, "costRupees": 690000, "variant": "triple_review" },
+    { "from": "changes_requested", "to": "review", "frequency": 41, "costRupees": 610000, "variant": "triple_review" },
+    { "from": "review", "to": "changes_requested", "frequency": 33, "costRupees": 640000, "variant": "triple_review" },
+    { "from": "changes_requested", "to": "review", "frequency": 33, "costRupees": 590000, "variant": "triple_review" }
+  ],
+  "variantSummary": [
+    { "variant": "happy_path", "shareOfWorkItems": 0.60, "shareOfCost": 0.42 },
+    { "variant": "rework_loop", "shareOfWorkItems": 0.32, "shareOfCost": 0.35 },
+    { "variant": "triple_review", "shareOfWorkItems": 0.08, "shareOfCost": 0.23 }
+  ]
+}

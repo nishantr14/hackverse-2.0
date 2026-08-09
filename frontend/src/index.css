@@ -1,0 +1,148 @@
+@import 'tailwindcss';
+@import '@fontsource-variable/inter';
+/* Figures are set in IBM Plex Mono. Only the weights actually used are pulled
+   in — the variable build of Plex Mono is not published on fontsource. */
+@import '@fontsource/ibm-plex-mono/400.css';
+@import '@fontsource/ibm-plex-mono/500.css';
+@import '@fontsource/ibm-plex-mono/600.css';
+
+/* ---------------------------------------------------------------------------
+   Engineering Spend Intelligence — design tokens
+
+   Colour rule, revised: chrome is NEUTRAL and data is the only thing on screen
+   wearing a hue. The original spec put UI actions on indigo, but indigo
+   measured too close to two project colours to survive its own separation rule
+   — normal-vision ΔE 11.4 against the Payments blue against a floor of 15, and
+   CVD ΔE 4.7 against the Delta violet against a floor of 6, meaning a
+   red-green colourblind viewer could not tell the active nav pill from a data
+   territory. Neutral chrome removes the collision outright.
+   --------------------------------------------------------------------------- */
+
+@theme {
+  /* Surfaces. Each step is a real, visible lift on the one below — the first
+     pass used near-identical translucent greys and the whole app read as one
+     murky sheet. Cards are opaque so text sits on a known colour. */
+  --color-page: #0b0e14;
+  --color-card: #161b27; /* panel */
+  --color-raised: #1e2432; /* tiles, rows, controls inside a panel */
+  --color-line: #262e3d;
+  --color-line-strong: #38425a;
+
+  /* ink */
+  --color-ink: #f2f4f8; /* 14.9:1 on card */
+  --color-ink-2: #a8b2c2; /* 7.1:1 on card — AA body */
+  --color-ink-3: #8a93a4; /* 4.8:1 on raised — captions, chrome */
+
+  /* UI chrome — actions, focus, nav. Neutral by design: no hue here competes
+     with a data colour, and nothing on screen wearing colour is decoration. */
+  --color-ui: #e8ecf4;
+
+  /* data semantics — never on buttons or nav */
+  --color-coral: #f0654f; /* cost increase · delay · risk */
+  --color-teal: #2dd4bf; /* saving · gain · on time */
+  --color-amber: #f5a623; /* waste · attention · exposure */
+
+  /* neutral data mark — spend itself is neither good nor bad */
+  --color-data: #5e6b80;
+  --color-data-strong: #8b94a6;
+
+  --font-sans:
+    'Inter Variable', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, 'Cascadia Mono', Menlo, monospace;
+
+  --ease-glass: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* Plain custom-property aliases using the names from the design spec, so
+   hand-written CSS and any teammate reading the spec finds what they expect. */
+:root {
+  --bg-page: #0b0e14;
+  --bg-card: #161b27;
+  --bg-raised: #1e2432;
+  --border: #262e3d;
+  --border-strong: #38425a;
+  --text-primary: #f2f4f8;
+  --text-secondary: #a8b2c2;
+  --text-muted: #8a93a4;
+
+  /* Neutral chrome. Alphas rather than solid steps so a control reads as a
+     lift on whatever surface it sits on. */
+  --ui: #e8ecf4;
+  --ui-active: rgb(255 255 255 / 0.09);
+  --ui-active-border: rgb(255 255 255 / 0.18);
+  --ui-hover: rgb(255 255 255 / 0.05);
+
+  --coral: #f0654f;
+  --teal: #2dd4bf;
+  --amber: #f5a623;
+
+  color-scheme: dark;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  background: var(--bg-page);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  font-synthesis-weight: none;
+}
+
+/* A single film of grain over the page. Dark flat fills read as paper on a
+   projector; a little noise makes them read as a surface. */
+.grain::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  opacity: 0.03;
+  mix-blend-mode: overlay;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+/* Figures.
+   Money and hours are the product on every screen, so they get their own face
+   rather than sharing the prose face. Mono also means columns actually line up
+   without asking for tabular figures. Prose stays Inter. */
+.tnum {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum' 1;
+  letter-spacing: -0.01em;
+  /* No font-size here. This rule is unlayered, so it outranks every Tailwind
+     size utility (which live in @layer utilities) — setting `font-size: 0.94em`
+     silently collapsed the 44px hero figure to ~15px. Optical size matching
+     belongs at the call site. */
+}
+
+/* One focus treatment everywhere. */
+:where(a, button, [tabindex]):focus-visible {
+  outline: 2px solid var(--ui);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+::selection {
+  background: rgb(255 255 255 / 0.22);
+}
+
+/* Recharts leaves a focus rectangle on its surfaces; we supply our own. */
+.recharts-wrapper:focus,
+.recharts-surface:focus {
+  outline: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
