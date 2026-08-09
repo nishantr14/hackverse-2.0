@@ -138,20 +138,44 @@ REST_PAGINATION_CAP = 1000
 #: problem is not the page size and halving again only wastes requests.
 MIN_PAGE_SIZE = 10
 
-#: httpx phrasings for "the body stopped early". A 200 with half a body is a
-#: transport failure wearing a success code, and none of the status-code
-#: checks can see it.
-TRUNCATION_MARKERS = (
+#: PRs per page. NOT MAX_PAGE_SIZE, and the difference is the point.
+#:
+#: Each PR node now carries up to 100 files + 100 reviews + 100 timeline items
+#: + 20 labels, so 100 PRs is ~32,000 nodes in one response and apache/kafka
+#: answered 504 every time. The configuration that worked before reviews and
+#: timelineItems were raised was 100 x ~150 nodes; 50 x ~320 lands in the same
+#: place. The adaptive halving below still exists as the safety net, but it
+#: should not be the thing that finds a working size on every single run.
+PR_PAGE_SIZE = 50
+
+#: Attempts inside execute() before fetch_repo is allowed to shrink the page.
+#: A page the server cannot compute will not compute on the sixth ask either,
+#: and six backoffs with full jitter is minutes of nothing. Two covers a
+#: genuinely transient blip; past that, ask for less instead of asking again.
+RETRIES_BEFORE_SHRINK = 2
+
+#: "GitHub could not produce this page", in all the shapes it arrives in.
+#:
+#: The first four are a 200 with half a body — a transport failure wearing a
+#: success code, which no status check can see. The gateway codes are the same
+#: problem stated honestly: 504 is GitHub giving up on generating the
+#: response. Both mean the page is too expensive, and both are cured by asking
+#: for a smaller one rather than asking again. Raising reviews and
+#: timelineItems to 100 produced the 504 within a page of starting.
+PAGE_TOO_EXPENSIVE = (
     "incomplete chunked read",
     "without sending complete message body",
     "truncated response body",
     "peer closed connection",
+    "http 502",
+    "http 504",
+    "timeout",
 )
 
 
-def _is_truncation(exc: Exception) -> bool:
+def _page_too_expensive(exc: Exception) -> bool:
     message = str(exc).lower()
-    return any(marker in message for marker in TRUNCATION_MARKERS)
+    return any(marker in message for marker in PAGE_TOO_EXPENSIVE)
 
 PR_QUERY = """
 query PullRequests($owner: String!, $name: String!, $cursor: String, $pageSize: Int!) {
@@ -182,11 +206,11 @@ query PullRequests($owner: String!, $name: String!, $cursor: String, $pageSize: 
         milestone { title number }
         labels(first: 20) { nodes { name } }
         files(first: 100) { nodes { path } }
-        reviews(first: 20) {
+        reviews(first: 100) {
           nodes { state submittedAt author { login __typename } }
         }
         timelineItems(
-          first: 30
+          first: 100
           itemTypes: [REVIEW_REQUESTED_EVENT, REOPENED_EVENT, HEAD_REF_FORCE_PUSHED_EVENT]
         ) {
           nodes {
@@ -574,9 +598,14 @@ class GitHubClient:
             }
         )
 
-    def execute(self, query: str, variables: dict[str, Any]) -> dict[str, Any]:
+    def execute(
+        self,
+        query: str,
+        variables: dict[str, Any],
+        max_retries: int = MAX_RETRIES,
+    ) -> dict[str, Any]:
         last_error: Exception | None = None
-        for attempt in range(MAX_RETRIES):
+        for attempt in range(max_retries):
             self.limiter.before_request()
             try:
                 response = self._client.post(
@@ -639,7 +668,7 @@ class GitHubClient:
             )
             return payload["data"]
 
-        raise GitHubError(f"giving up after {MAX_RETRIES} attempts: {last_error}")
+        raise GitHubError(f"giving up after {max_retries} attempts: {last_error}")
 
     @property
     def http(self) -> httpx.Client:
@@ -762,7 +791,7 @@ def fetch_repo(
     repo: str,
     client: GitHubClient,
     session: Session,
-    page_size: int = MAX_PAGE_SIZE,
+    page_size: int = PR_PAGE_SIZE,
     max_pages: int | None = None,
     resume: bool = True,
 ) -> Stats:
@@ -790,6 +819,7 @@ def fetch_repo(
                     "cursor": cursor,
                     "pageSize": page_size,
                 },
+                max_retries=RETRIES_BEFORE_SHRINK,
             )
         except GitHubError as exc:
             # THE PAGE IS TOO BIG, NOT THE NETWORK TOO FLAKY.
@@ -804,12 +834,12 @@ def fetch_repo(
             # labels) is simply a lot of JSON. Halving the page and re-asking
             # from the SAME cursor costs one wasted request and gets a body
             # that arrives whole. Same lesson as ASF refusing maxResults=100.
-            if not _is_truncation(exc) or page_size <= MIN_PAGE_SIZE:
+            if not _page_too_expensive(exc) or page_size <= MIN_PAGE_SIZE:
                 raise
             page_size = max(MIN_PAGE_SIZE, page_size // 2)
             stats.page_size_reductions += 1
             logger.warning(
-                "response body kept arriving incomplete; halving page size to "
+                "GitHub could not deliver this page; halving page size to "
                 "%d and retrying the same cursor",
                 page_size,
             )
@@ -881,7 +911,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     parser = argparse.ArgumentParser(description="Fetch PRs into raw_payload.")
     parser.add_argument("--repo", action="append", help="owner/name; repeatable")
-    parser.add_argument("--page-size", type=int, default=MAX_PAGE_SIZE)
+    parser.add_argument("--page-size", type=int, default=PR_PAGE_SIZE)
     parser.add_argument("--max-pages", type=int, default=None)
     parser.add_argument(
         "--reset-cursor",
