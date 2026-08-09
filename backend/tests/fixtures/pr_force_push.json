@@ -1,8 +1,8 @@
 {
-  "number": 20401,
-  "title": "KAFKA-19001: rework metadata snapshot loader",
+  "number": 900003,
+  "title": "KAFKA-900012: rework metadata snapshot loader",
   "body": "Rebased twice after review.",
-  "headRefName": "KAFKA-19001-snapshot",
+  "headRefName": "KAFKA-900012-snapshot",
   "createdAt": "2026-05-01T10:00:00+00:00",
   "updatedAt": "2026-05-12T09:00:00+00:00",
   "mergedAt": null,

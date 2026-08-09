@@ -74,3 +74,29 @@ band_inference:
     senior: 30
     mid: 40
     junior: 20
+
+ci_cost:
+  # ------------------------------------------------------------------
+  # FILL THESE IN. CI waste refuses to price a rupee figure without them —
+  # same contract as rate_card above. runner-minutes themselves are always
+  # computed and returned; only the currency conversion is gated.
+  # ------------------------------------------------------------------
+  source:
+    publisher: ""      # e.g. "GitHub Actions pricing page"
+    url: ""
+    retrieved: ""      # YYYY-MM-DD
+  currency: INR
+  cost_per_runner_minute: null
+
+carbon:
+  # ------------------------------------------------------------------
+  # FILL THESE IN. Converts runner-minutes to kgCO2e. Two citations, not
+  # one: a grid emissions factor AND an assumed CI-runner power draw, since
+  # neither alone gets you from minutes to carbon.
+  # ------------------------------------------------------------------
+  source:
+    publisher: ""
+    url: ""
+    retrieved: ""
+  grid_kg_co2_per_kwh: null
+  runner_power_watts: null

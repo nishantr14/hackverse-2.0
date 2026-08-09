@@ -67,6 +67,17 @@ def test_root_commit_has_no_parents():
     assert _parse_header(line).parents == []
 
 
+def test_a_non_utc_author_offset_is_normalized_to_utc():
+    """%aI/%cI preserve the author's original tz offset (e.g. +05:30), not
+    UTC — but GraphQL's authoredDate for the same commit is always UTC. Two
+    representations of the same instant must hash identically in
+    event_id_for, which only holds if both sides normalize first."""
+    line = f"{HEADER}abc|2026-03-01T17:30:00+05:30|2026-03-01T17:30:00+05:30|a@b.com|Ada||x"
+    commit = _parse_header(line)
+    assert commit.authored_at == datetime(2026, 3, 1, 12, 0, tzinfo=UTC)
+    assert commit.authored_at.isoformat() == "2026-03-01T12:00:00+00:00"
+
+
 # --- numstat parsing -----------------------------------------------------
 
 

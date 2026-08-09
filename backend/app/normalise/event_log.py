@@ -63,6 +63,11 @@ from app.normalise.activities import (
 logger = logging.getLogger(__name__)
 
 
+#: Days per month, as `github_connector` and `git_local` both compute it. The
+#: three must agree exactly: a cutoff half a day from git_local's would sort
+#: the same fortnight of commits and PRs into different windows.
+DAYS_PER_MONTH = 30.44
+
 #: Recorded in run_config so `in_window` in v_event_log is reproducible from
 #: the database alone, without knowing what HISTORY_MONTHS was on the day.
 CUTOFF_KEY = "history_cutoff"
@@ -95,6 +100,12 @@ class Stats:
     key_source: dict[str, int] = field(default_factory=dict)
     repaired_cases: int = 0
     repaired_events: int = 0
+    #: PRs both created and merged before the HISTORY_MONTHS boundary. Skipped,
+    #: never deleted from raw_payload - the raw layer keeps what it fetched.
+    prs_outside_window: int = 0
+    #: PRs created before the boundary but merged, or still open, inside it.
+    #: Kept, and counted because filtering on createdAt alone would drop them.
+    prs_created_before_window_kept: int = 0
 
     def add(self, activity: str, n: int = 1) -> None:
         self.events[activity] = self.events.get(activity, 0) + n
@@ -140,6 +151,70 @@ def parse_ts(value: str | None) -> datetime | None:
 # ---------------------------------------------------------------------
 # Case identity
 # ---------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------
+# The ingestion window
+# ---------------------------------------------------------------------
+
+
+def window_cutoff(now: datetime | None = None) -> datetime:
+    """The HISTORY_MONTHS boundary, computed exactly as the ingesters do.
+
+    `github_connector` pages by UPDATED_AT DESC and stops here, which is the
+    right filter for "was this active recently" and the wrong one for "did this
+    happen recently": a 2023 PR re-enters the feed the moment somebody comments
+    on it, carrying its 2023 timestamps. The connector's own
+    `_content_predates_window` docstring says so and deliberately does not drop
+    the row - it counts it and leaves the decision to this module.
+
+    `now` is injectable so tests do not depend on the wall clock; production
+    passes nothing, matching git_local and github_connector.
+    """
+    months = get_settings().history_months
+    return (now or datetime.now(UTC)) - timedelta(days=round(months * DAYS_PER_MONTH))
+
+
+def within_window(
+    payloads: Sequence[tuple[str, dict[str, Any]]],
+    stats: Stats,
+    now: datetime | None = None,
+) -> list[tuple[str, dict[str, Any]]]:
+    """Drop PRs that both opened and landed before the boundary. Counts, never deletes.
+
+    THE TEST IS `mergedAt or createdAt`, NOT `createdAt`. That is the
+    connector's own rule, restated so the fetch boundary and the mapping
+    boundary cannot disagree about which PRs belong to the window. Filtering on
+    `createdAt` alone is too aggressive: measured against the live API, 788 PRs
+    were created before the boundary but are still active or completed inside
+    it, carrying 1,403 in-window events and 127 merges. A PR opened in 2023 and
+    merged last month is in-window work whatever its creation date says.
+
+    What goes, correctly, is a PR both created and merged before the boundary,
+    in `raw_payload` only because someone commented on it recently. Mapping
+    those stretched the event window to 2015-2026 on a log the UI labels twelve
+    months, stretched the sprint grid from ~26 windows to 289, and produced
+    most of check 2's "merged with no commit" - git_local clones twelve months,
+    so those commits cannot be there to join to.
+
+    Skipping is not deleting. The payloads stay in `raw_payload`, so turning
+    the filter off with --no-window-filter re-maps them without a re-fetch.
+    """
+    cutoff = window_cutoff(now)
+    kept: list[tuple[str, dict[str, Any]]] = []
+    for entity_id, node in payloads:
+        created = parse_ts(node.get("createdAt"))
+        # mergedAt first: it is the stamp that says when the work landed.
+        # Falling back to createdAt judges an unmerged PR on the only date it
+        # has, which is what the connector does.
+        stamp = parse_ts(node.get("mergedAt")) or created
+        if stamp is not None and stamp < cutoff:
+            stats.prs_outside_window += 1
+            continue
+        if created is not None and created < cutoff:
+            stats.prs_created_before_window_kept += 1
+        kept.append((entity_id, node))
+    return kept
 
 
 def ticket_key_from_pr(node: dict[str, Any], repo: str) -> tuple[str | None, str]:
@@ -389,19 +464,30 @@ def upsert_work_items(session: Session, rows: list[dict[str, Any]]) -> int:
 # ---------------------------------------------------------------------
 
 
-def map_pull_requests(session: Session, stats: Stats) -> None:
+def map_pull_requests(
+    session: Session, stats: Stats, window: bool = True
+) -> None:
     """github_graphql payloads -> merged / review_requested / review / etc.
 
     `pr_opened` is deliberately absent: it is not in the frozen vocabulary.
     The PR's creation time lands on work_item.opened_at instead, which is
     where a case-level fact belongs. See activities.REQUESTED_TO_CANONICAL.
+
+    `window=False` maps every landed PR, including ones that closed years
+    before the ingestion boundary. See `within_window` for why that is not the
+    default.
     """
-    payloads = session.execute(
-        select(RawPayload.entity_id, RawPayload.body).where(
-            RawPayload.source == "github_graphql",
-            RawPayload.entity_type == "pull_request",
-        )
-    ).all()
+    payloads: Sequence[tuple[str, dict[str, Any]]] = [
+        (row[0], row[1])
+        for row in session.execute(
+            select(RawPayload.entity_id, RawPayload.body).where(
+                RawPayload.source == "github_graphql",
+                RawPayload.entity_type == "pull_request",
+            )
+        ).all()
+    ]
+    if window:
+        payloads = within_window(payloads, stats)
 
     # Cases git already built from a commit subject ending `(#23015)`. Used
     # below to veto a ticket key that only ever appeared in a PR body.
@@ -574,6 +660,54 @@ def map_pull_requests(session: Session, stats: Stats) -> None:
                 }
             )
             stats.add(activity)
+
+        # P2: squash-merge collapses trunk history to one commit per PR
+        # (measured: avg 1.18 commits/work_item, median 1.0), leaving session
+        # inference nothing to cluster. github_connector.PR_QUERY now fetches
+        # each PR's own pre-squash commits; land them here.
+        for commit_node in (node.get("commits") or {}).get("nodes") or []:
+            if not commit_node:
+                continue
+            commit = commit_node.get("commit") or {}
+            oid = commit.get("oid")
+            ts = parse_ts(commit.get("authoredDate"))
+            if not oid or not ts:
+                continue
+            author_node = (commit.get("author") or {}).get("user")
+            if isinstance(author_node, dict) and author_node.get("is_bot"):
+                stats.skipped_bot_events += 1
+                continue
+            committer = note(actor_from(author_node), ts)
+            events.append(
+                {
+                    # Byte-identical to git_local.event_id_for on the same
+                    # (sha, authored_at) — see that function's docstring. A
+                    # commit git_local already saw on trunk (a non-squash
+                    # merge) converges onto that row via write_events'
+                    # on_conflict_do_update instead of duplicating; a commit
+                    # squashed away before it ever reached trunk has no
+                    # existing row and lands here for the first time.
+                    "event_id": event_id_for(
+                        "git_local", "commit", str(oid), "commit", ts.isoformat()
+                    ),
+                    "work_item_id": case_id,
+                    "actor_hash": committer,
+                    "activity": "commit",
+                    "ts": ts,
+                    "source": "github",
+                    "attrs": {
+                        "ingest_source": "github_graphql",
+                        "sha": oid,
+                        "pr_number": number,
+                        "additions": commit.get("additions"),
+                        "deletions": commit.get("deletions"),
+                        "changed_files": commit.get("changedFiles"),
+                        "is_squash_merge": bool(merge_sha) and oid == merge_sha,
+                        "actor_absent": absence_reason(author_node),
+                    },
+                }
+            )
+            stats.add("commit")
 
     stats.work_items += upsert_work_items(session, items)
     ensure_actors(session, actors_seen, stats)
@@ -971,8 +1105,10 @@ def map_ci_runs(session: Session, stats: Stats) -> None:
 
 
 def record_cutoff(session: Session) -> datetime:
-    settings = get_settings()
-    cutoff = datetime.now(UTC) - timedelta(days=round(settings.history_months * 30.44))
+    # One definition of the boundary, shared with the PR filter. These used to
+    # be the same expression written twice; they must never drift, because
+    # v_event_log.in_window is computed from what lands here.
+    cutoff = window_cutoff()
     stmt = insert(RunConfig).values(
         key=CUTOFF_KEY, value=cutoff.isoformat(), note=CUTOFF_NOTE
     )
@@ -999,7 +1135,7 @@ def apply_views(session: Session) -> None:
     session.commit()
 
 
-def build(session: Session) -> Stats:
+def build(session: Session, window: bool = True) -> Stats:
     stats = Stats()
     apply_views(session)
     record_cutoff(session)
@@ -1007,7 +1143,7 @@ def build(session: Session) -> Stats:
     # `apache/kafka#23112` BEFORE the PR mapper lands PR 23112, or the two
     # halves of one piece of work end up in two different cases.
     repair_invalid_cases(session, stats)
-    map_pull_requests(session, stats)
+    map_pull_requests(session, stats, window=window)
     map_jira(session, stats)
     rejoined = rejoin_ci_runs(session)
     logger.info("re-joined %d ci_run rows to a work item", rejoined)
@@ -1023,15 +1159,36 @@ def main(argv: Sequence[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     parser = argparse.ArgumentParser(description="Build the canonical event log.")
     parser.add_argument("--verify", action="store_true", help="print the report only")
+    parser.add_argument(
+        "--no-window-filter",
+        dest="window",
+        action="store_false",
+        help="map every landed PR, including ones created AND merged before "
+        "the HISTORY_MONTHS boundary. On by default; see within_window.",
+    )
     args = parser.parse_args(argv)
 
     from app.normalise.verify import print_report
 
     with write_session() as session:
         if not args.verify:
-            stats = build(session)
+            stats = build(session, window=args.window)
             print(f"\nmapped {stats.total_events:,} events from "
                   f"{stats.pr_payloads:,} PR and {stats.jira_payloads:,} Jira payloads")
+            months = get_settings().history_months
+            if args.window:
+                print(f"\n  the {months}-month window "
+                      "(rule: mergedAt or createdAt)")
+                print(f"    PRs skipped             {stats.prs_outside_window:>6}  "
+                      "(created AND merged before it)")
+                print("    older PRs kept          "
+                      f"{stats.prs_created_before_window_kept:>6}  "
+                      "(created before it, landed inside)")
+                print("    Skipped rows stay in raw_payload; --no-window-filter")
+                print("    re-maps them without a re-fetch.")
+            else:
+                print(f"\n  window filter OFF - every landed PR mapped, "
+                      f"including pre-{months}-month work")
         print_report(session)
     return 0
 

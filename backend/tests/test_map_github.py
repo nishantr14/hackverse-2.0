@@ -142,22 +142,22 @@ def test_component_breaks_ties_alphabetically_for_reproducibility():
 def test_pr_with_no_ticket_key_falls_through_to_pr_number(no_ticket):
     """Never drop a PR for lacking a ticket key."""
     mapped = mg.map_pull_request(no_ticket)
-    assert mapped.work_item["work_item_id"] == "apache/kafka#19565"
+    assert mapped.work_item["work_item_id"] == "apache/kafka#900001"
     assert mapped.case_source == "pr"
     assert mapped.work_item["jira_key"] is None
 
 
 def test_ticket_key_comes_from_the_title_first(review_rounds):
     mapped = mg.map_pull_request(review_rounds)
-    assert mapped.work_item["work_item_id"] == "KAFKA-18220"
+    assert mapped.work_item["work_item_id"] == "KAFKA-900013"
     assert mapped.case_source == "ticket_key"
 
 
 def test_body_mentions_do_not_steal_the_case(review_rounds):
-    """The body names KAFKA-17999 and KAFKA-12345; the title must win."""
-    assert "KAFKA-17999" in review_rounds["body"]
+    """The body names KAFKA-900014 and KAFKA-900015; the title must win."""
+    assert "KAFKA-900014" in review_rounds["body"]
     mapped = mg.map_pull_request(review_rounds)
-    assert mapped.work_item["work_item_id"] == "KAFKA-18220"
+    assert mapped.work_item["work_item_id"] == "KAFKA-900013"
 
 
 def test_ticket_key_falls_back_to_the_branch():
@@ -185,7 +185,7 @@ def test_ticket_key_falls_back_to_the_body_last():
 
 def test_closing_issue_is_the_second_rung(with_issue):
     mapped = mg.map_pull_request(with_issue)
-    assert mapped.work_item["work_item_id"] == "apache/kafka#20455"
+    assert mapped.work_item["work_item_id"] == "apache/kafka#900010"
     assert mapped.case_source == "issue"
 
 
@@ -320,6 +320,122 @@ def test_merged_event_has_no_fabricated_actor(no_ticket):
     assert merged["attrs"]["actor_basis"] == "not_fetched"
 
 
+# =====================================================================
+# The PR's own commits (P2: squash-merge leaves session inference nothing
+# to cluster; these intermediate commits are the real signal)
+# =====================================================================
+
+
+def _pr_commit(oid="c1", authored="2026-04-01T09:00:00Z"):
+    """A scrubbed commit node, exactly as github_connector would land it."""
+    return {
+        "commit": {
+            "oid": oid,
+            "authoredDate": authored,
+            "additions": 4,
+            "deletions": 1,
+            "changedFiles": 1,
+            "author": {"user": {"actor_hash": "a" * 16, "is_bot": False, "__typename": "User"}},
+        }
+    }
+
+
+def test_pr_commits_become_commit_events(review_rounds):
+    review_rounds["commits"] = {"nodes": [_pr_commit("c1"), _pr_commit("c2")]}
+    mapped = mg.map_pull_request(review_rounds)
+    commits = [e for e in mapped.events if e["activity"] == "commit"]
+    assert {e["attrs"]["sha"] for e in commits} == {"c1", "c2"}
+    assert all(e["work_item_id"] == "KAFKA-900013" for e in commits)
+    assert all(e["source"] == "github" for e in commits)
+
+
+def test_commit_event_id_matches_git_local_scheme(review_rounds):
+    """The whole dedup story depends on this: a commit git_local already saw
+    on trunk must converge on the SAME event_id, not create a second row."""
+    ts = datetime(2026, 4, 1, 9, 0, tzinfo=UTC)
+    review_rounds["commits"] = {"nodes": [_pr_commit("c1", authored="2026-04-01T09:00:00Z")]}
+    mapped = mg.map_pull_request(review_rounds)
+    commit_event = next(e for e in mapped.events if e["activity"] == "commit")
+    assert commit_event["event_id"] == git_event_id("c1", ts)
+
+
+def test_commit_ts_is_the_authored_date_not_a_commit_date(review_rounds):
+    """Decision: author date for a commit, never the commit date."""
+    review_rounds["commits"] = {"nodes": [_pr_commit("c1", authored="2026-04-01T09:00:00Z")]}
+    mapped = mg.map_pull_request(review_rounds)
+    commit_event = next(e for e in mapped.events if e["activity"] == "commit")
+    assert commit_event["ts"] == datetime(2026, 4, 1, 9, 0, tzinfo=UTC)
+
+
+def test_bot_commit_author_is_dropped_not_mapped(review_rounds):
+    bot_commit = {
+        "commit": {
+            "oid": "c-bot",
+            "authoredDate": "2026-04-01T09:00:00Z",
+            "additions": 1,
+            "deletions": 0,
+            "changedFiles": 1,
+            "author": {"user": {"is_bot": True, "__typename": "Bot"}},
+        }
+    }
+    review_rounds["commits"] = {"nodes": [bot_commit]}
+    mapped = mg.map_pull_request(review_rounds)
+    assert not [e for e in mapped.events if e["activity"] == "commit"]
+    assert mapped.bot_events_dropped == 1
+
+
+def test_commit_with_no_linked_github_account_records_actor_absent(review_rounds):
+    """A deleted account, or a git email that never mapped to a login, still
+    leaves a null resource — but an unexplained one is what a mapper that
+    silently dropped a human looks like."""
+    no_account_commit = {
+        "commit": {
+            "oid": "c-ghost",
+            "authoredDate": "2026-04-01T09:00:00Z",
+            "additions": 1,
+            "deletions": 0,
+            "changedFiles": 1,
+            "author": {"user": None},
+        }
+    }
+    review_rounds["commits"] = {"nodes": [no_account_commit]}
+    mapped = mg.map_pull_request(review_rounds)
+    commit_event = next(e for e in mapped.events if e["activity"] == "commit")
+    assert commit_event["actor_hash"] is None
+    assert commit_event["attrs"]["actor_absent"] == "unattributed"
+
+
+def test_commit_matching_the_merge_commit_oid_is_flagged_squash():
+    """Where a PR commit oid equals the trunk merge commit's oid, it IS the
+    squash artefact — flag it so detectors can exclude it, per P2."""
+    node = load("pr_ticket_key_repoints_commit")  # mergeCommit.oid = "5" * 40
+    node["commits"] = {
+        "nodes": [
+            _pr_commit(oid="5" * 40, authored="2026-07-05T08:00:00Z"),
+            _pr_commit(oid="intermediate-1", authored="2026-07-04T08:00:00Z"),
+        ]
+    }
+    mapped = mg.map_pull_request(node)
+    by_sha = {e["attrs"]["sha"]: e for e in mapped.events if e["activity"] == "commit"}
+    assert by_sha["5" * 40]["attrs"]["is_squash_merge"] is True
+    assert by_sha["intermediate-1"]["attrs"]["is_squash_merge"] is False
+
+
+def test_a_commit_with_no_authored_date_is_skipped(review_rounds):
+    review_rounds["commits"] = {
+        "nodes": [{"commit": {"oid": "no-date", "author": {"user": None}}}]
+    }
+    mapped = mg.map_pull_request(review_rounds)
+    assert not [e for e in mapped.events if e["activity"] == "commit"]
+
+
+def test_a_pr_with_no_commits_section_maps_the_same_as_before(no_ticket):
+    """Old fixtures/payloads with no `commits` key must not break."""
+    assert "commits" not in no_ticket
+    mapped = mg.map_pull_request(no_ticket)
+    assert not [e for e in mapped.events if e["activity"] == "commit"]
+
+
 def test_every_event_carries_source_github(review_rounds):
     """Decision #11: a row without a source is a bug."""
     for event in mg.map_pull_request(review_rounds).events:
@@ -328,7 +444,7 @@ def test_every_event_carries_source_github(review_rounds):
 
 def test_every_event_hangs_off_the_resolved_case(review_rounds):
     mapped = mg.map_pull_request(review_rounds)
-    assert {e["work_item_id"] for e in mapped.events} == {"KAFKA-18220"}
+    assert {e["work_item_id"] for e in mapped.events} == {"KAFKA-900013"}
 
 
 # =====================================================================
@@ -386,7 +502,7 @@ def test_work_item_carries_no_sprint_key(review_rounds):
 
 
 def test_work_item_records_the_pr_as_source_ref(no_ticket):
-    assert mg.map_pull_request(no_ticket).work_item["source_ref"] == "apache/kafka#19565"
+    assert mg.map_pull_request(no_ticket).work_item["source_ref"] == "apache/kafka#900001"
 
 
 def test_closed_at_falls_back_to_merged_at():
@@ -602,56 +718,325 @@ def test_all_timestamps_stay_timezone_aware(review_rounds):
             assert value.tzinfo is not None
 
 
+
 # =====================================================================
+
+# =====================================================================
+# Case merging — several PRs on one ticket key
+#
+# Measured on apache/kafka: 3,314 PRs collapse to 2,562 cases, and every one
+# of the 332 duplicated ids is case_source='ticket_key'. KAFKA-10199 alone is
+# 19 pull requests. Sending those as 19 rows in one INSERT ... ON CONFLICT is
+# what Postgres rejects with CardinalityViolation.
+# =====================================================================
+
+
+def _pr(
+    number: int,
+    *,
+    key: str = "KAFKA-10199",
+    opened: str = "2026-01-01T00:00:00+00:00",
+    closed: str | None = "2026-01-10T00:00:00+00:00",
+    paths: list[str] | None = None,
+    title: str | None = None,
+) -> dict:
+    """A minimal PR payload sharing one ticket key."""
+    return {
+        "number": number,
+        "repo": "apache/kafka",
+        "title": title or f"{key}: part {number}",
+        "body": "",
+        "headRefName": f"{key}-{number}",
+        "createdAt": opened,
+        "closedAt": closed,
+        "mergedAt": closed,
+        # `is None` not `or`: paths=[] means "this PR listed no files", which is
+        # a case the merge rule has to handle, not a request for the default.
+        "files": {
+            "nodes": [
+                {"path": p} for p in (["streams/a.java"] if paths is None else paths)
+            ]
+        },
+        "reviews": {"nodes": []},
+        "timelineItems": {"nodes": []},
+    }
+
+
+def _group(*bodies: dict) -> list:
+    return [mg.map_pull_request(b) for b in bodies]
+
+
+def test_three_prs_on_one_ticket_become_one_work_item():
+    merged = mg.merge_work_items(_group(_pr(101), _pr(102), _pr(103)))
+    assert merged["work_item_id"] == "KAFKA-10199"
+
+
+def test_merged_opened_at_is_the_minimum():
+    group = _group(
+        _pr(101, opened="2026-03-01T00:00:00+00:00"),
+        _pr(102, opened="2026-01-15T00:00:00+00:00"),
+        _pr(103, opened="2026-02-01T00:00:00+00:00"),
+    )
+    assert mg.merge_work_items(group)["opened_at"] == datetime(2026, 1, 15, tzinfo=UTC)
+
+
+def test_merged_closed_at_is_the_maximum():
+    group = _group(
+        _pr(101, closed="2026-03-01T00:00:00+00:00"),
+        _pr(102, closed="2026-05-20T00:00:00+00:00"),
+        _pr(103, closed="2026-04-01T00:00:00+00:00"),
+    )
+    assert mg.merge_work_items(group)["closed_at"] == datetime(2026, 5, 20, tzinfo=UTC)
+
+
+def test_one_open_pr_keeps_the_whole_case_open():
+    """MAX would report the case finished while work is still in review."""
+    group = _group(
+        _pr(101, closed="2026-03-01T00:00:00+00:00"),
+        _pr(102, closed=None),
+        _pr(103, closed="2026-04-01T00:00:00+00:00"),
+    )
+    assert mg.merge_work_items(group)["closed_at"] is None
+
+
+def test_component_is_stable_across_repeated_runs():
+    """The bug this guards: a component that depends on payload order makes
+    every downstream cost number irreproducible."""
+    bodies = [
+        _pr(101, paths=["streams/a.java", "streams/b.java"]),
+        _pr(102, paths=["clients/c.java"]),
+        _pr(103, paths=["core/d.java"]),
+    ]
+    first = mg.merge_work_items(_group(*bodies))["component"]
+    for permutation in ([2, 0, 1], [1, 2, 0], [2, 1, 0]):
+        shuffled = [bodies[i] for i in permutation]
+        assert mg.merge_work_items(_group(*shuffled))["component"] == first
+    assert first == "streams", "the component touching the most files wins"
+
+
+def test_component_tie_breaks_lexically_not_by_order():
+    bodies = [_pr(101, paths=["zzz/a"]), _pr(102, paths=["aaa/b"])]
+    assert mg.merge_work_items(_group(*bodies))["component"] == "aaa"
+    assert mg.merge_work_items(_group(*reversed(bodies)))["component"] == "aaa"
+
+
+def test_component_falls_back_when_no_pr_listed_files():
+    group = _group(_pr(101, paths=[]), _pr(102, paths=[]))
+    assert mg.merge_work_items(group)["component"] is None
+
+
+def test_case_source_takes_the_strongest_present():
+    assert mg._strongest_case_source(["pr", "ticket_key", "issue"]) == "ticket_key"
+    assert mg._strongest_case_source(["pr", "issue"]) == "issue"
+    assert mg._strongest_case_source(["pr"]) == "pr"
+    assert mg._strongest_case_source([]) == "pr"
+
+
+def test_source_ref_is_the_earliest_pr_tie_broken_by_number():
+    group = _group(
+        _pr(300, opened="2026-02-01T00:00:00+00:00"),
+        _pr(100, opened="2026-01-01T00:00:00+00:00"),
+        _pr(200, opened="2026-01-01T00:00:00+00:00"),
+    )
+    assert mg.merge_work_items(group)["source_ref"] == "apache/kafka#100"
+
+
+def test_merge_is_order_independent_in_every_field():
+    bodies = [
+        _pr(101, opened="2026-03-01T00:00:00+00:00",
+            closed="2026-03-05T00:00:00+00:00", paths=["core/a"]),
+        _pr(102, opened="2026-01-01T00:00:00+00:00",
+            closed="2026-06-01T00:00:00+00:00", paths=["streams/b", "streams/c"]),
+        _pr(103, opened="2026-02-01T00:00:00+00:00",
+            closed="2026-02-02T00:00:00+00:00", paths=["clients/d"]),
+    ]
+    baseline = mg.merge_work_items(_group(*bodies))
+    for permutation in ([2, 1, 0], [1, 0, 2], [0, 2, 1], [2, 0, 1]):
+        assert mg.merge_work_items(_group(*[bodies[i] for i in permutation])) == baseline
+
+
+def test_merging_a_single_pr_is_a_no_op_on_the_fields_that_matter():
+    single = mg.map_pull_request(_pr(101))
+    merged = mg.merge_work_items([single])
+    for name in (
+        "work_item_id", "opened_at", "closed_at", "component",
+        "case_source", "source_ref", "repo",
+    ):
+        assert merged[name] == single.work_item[name]
+
+
+def test_merging_mixed_ids_is_a_programming_error():
+    group = _group(_pr(101, key="KAFKA-1"), _pr(102, key="KAFKA-2"))
+    with pytest.raises(ValueError, match="mixed ids"):
+        mg.merge_work_items(group)
+
+
+def test_merging_nothing_raises():
+    with pytest.raises(ValueError):
+        mg.merge_work_items([])
+
+
+def test_writer_rejects_an_unmerged_batch_with_a_useful_message():
+    """The guard that turns CardinalityViolation into a message naming names."""
+    rows = [
+        {"work_item_id": "KAFKA-1", "repo": "r"},
+        {"work_item_id": "KAFKA-1", "repo": "r"},
+    ]
+    with pytest.raises(ValueError, match="duplicate work_item_id"):
+        mg._write_work_items(None, rows)
+
+
 # Live database — the SQL path. Skips when Postgres is not running.
+#
+# The fixtures are re-homed onto a synthetic `fixture/repo` before they are
+# landed. They originally carried `apache/kafka` and real PR numbers, which
+# collided with `raw_payload`'s primary key the moment the connector landed
+# 3,314 genuine apache/kafka PRs. Isolating the repo keeps these tests
+# independent of whatever the developer has ingested, which is the only way an
+# assertion like "5 payloads" can stay true.
 # =====================================================================
+
+FIXTURE_REPO = "fixture/repo"
+
+PR_FIXTURES = (
+    "pr_no_ticket_key",
+    "pr_multiple_review_rounds",
+    "pr_force_push",
+    "pr_reopened_with_issue",
+    "pr_ticket_key_repoints_commit",
+)
+RUN_FIXTURES = ("run_matching_head_sha", "run_unmatched")
+
+
+def _rehomed(name: str) -> dict:
+    body = load(name)
+    body["repo"] = FIXTURE_REPO
+    return body
+
+
+def _land_pr(session, body: dict) -> None:
+    from app.db.models import RawPayload
+
+    body["repo"] = FIXTURE_REPO
+    session.add(
+        RawPayload(
+            source="github_graphql",
+            entity_type="pull_request",
+            entity_id=f"{FIXTURE_REPO}#{body['number']}",
+            body=body,
+        )
+    )
+
+
+def test_write_work_items_refuses_a_batch_colliding_on_the_same_case(pg_engine):
+    """Two PRs resolving to the same ticket key (a revert and its original,
+    say) must not silently pick a winner — Postgres rejects an ON CONFLICT
+    DO UPDATE statement that touches the same row twice in one VALUES list
+    anyway, so this fails loudly and names the id rather than raising an
+    opaque CardinalityViolation. Callers must merge_work_items() first."""
+    from sqlalchemy.orm import Session as OrmSession
+
+    session = OrmSession(pg_engine)
+    try:
+        row = {
+            "work_item_id": "KAFKA-900099",
+            "repo": "apache/kafka",
+            "component": "core",
+            "epic": None,
+            "opened_at": None,
+            "closed_at": None,
+            "source_ref": "apache/kafka#1",
+            "case_source": "ticket_key",
+            "jira_key": "KAFKA-900099",
+        }
+        other = {**row, "source_ref": "apache/kafka#2"}
+        with pytest.raises(ValueError, match="KAFKA-900099"):
+            mg._write_work_items(session, [row, other])
+    finally:
+        session.rollback()
+        session.close()
+
+
+def test_write_events_chunks_batches_past_the_parameter_limit(pg_engine):
+    """A single INSERT ... VALUES statement is capped by Postgres at 65,535
+    bind parameters. P2's commit backfill writes far more rows than one
+    unchunked statement could hold — this proves the chunking actually works
+    end to end, not just that a small batch doesn't raise."""
+    from sqlalchemy import func, select
+    from sqlalchemy.orm import Session as OrmSession
+
+    from app.db.models import EventLog, WorkItem
+
+    session = OrmSession(pg_engine)
+    try:
+        session.add(
+            WorkItem(
+                work_item_id="apache/kafka@chunk-test",
+                repo="apache/kafka",
+                component="core",
+                case_source="pr",
+            )
+        )
+        session.flush()
+        row_width = 7  # event_id, work_item_id, actor_hash, activity, ts, source, attrs
+        chunk_size = mg.PG_MAX_BIND_PARAMS // row_width
+        rows = [
+            {
+                "event_id": f"chunk-test-{i:06d}",
+                "work_item_id": "apache/kafka@chunk-test",
+                "actor_hash": None,
+                "activity": "commit",
+                "ts": datetime(2026, 1, 1, tzinfo=UTC),
+                "source": "github",
+                "attrs": {"sha": f"sha{i}"},
+            }
+            for i in range(chunk_size + 500)
+        ]
+        written, collapsed = mg._write_events(session, rows)
+        assert written == len(rows)
+        assert collapsed == 0
+        count = session.execute(
+            select(func.count())
+            .select_from(EventLog)
+            .where(EventLog.event_id.like("chunk-test-%"))
+        ).scalar_one()
+        assert count == len(rows)
+    finally:
+        session.rollback()
+        session.close()
 
 
 @pytest.fixture
 def seeded_session(pg_engine):
     """A session with the fixtures landed in raw_payload, rolled back after.
 
-    Everything below runs inside one transaction that is never committed, so
-    the developer's real ingest is untouched no matter how a test ends.
+    Everything runs inside one transaction that is never committed, so the
+    developer's real ingest is untouched no matter how a test ends.
     """
     from app.db.models import EventLog, RawPayload, WorkItem
     from sqlalchemy.orm import Session as OrmSession
 
     session = OrmSession(pg_engine)
     try:
-        for name in (
-            "pr_no_ticket_key",
-            "pr_multiple_review_rounds",
-            "pr_force_push",
-            "pr_reopened_with_issue",
-            "pr_ticket_key_repoints_commit",
-        ):
-            body = load(name)
-            session.add(
-                RawPayload(
-                    source="github_graphql",
-                    entity_type="pull_request",
-                    entity_id=f"{body['repo']}#{body['number']}",
-                    body=body,
-                )
-            )
-        for name in ("run_matching_head_sha", "run_unmatched"):
-            body = load(name)
+        for name in PR_FIXTURES:
+            _land_pr(session, _rehomed(name))
+        for name in RUN_FIXTURES:
+            body = _rehomed(name)
             session.add(
                 RawPayload(
                     source="github_actions",
                     entity_type="workflow_run",
-                    entity_id=f"{body['repo']}:{body['id']}",
+                    entity_id=f"{FIXTURE_REPO}:{body['id']}",
                     body=body,
                 )
             )
 
         # git_local's world before the PR mapper runs: a provisional case
-        # holding the squash commit that PR 20600 will claim.
+        # holding the squash commit that PR 900005 will claim.
         session.add(
             WorkItem(
-                work_item_id="apache/kafka@555555555555",
-                repo="apache/kafka",
+                work_item_id=f"{FIXTURE_REPO}@555555555555",
+                repo=FIXTURE_REPO,
                 component="core",
                 case_source="pr",
                 sprint=7,
@@ -661,7 +1046,7 @@ def seeded_session(pg_engine):
         session.add(
             EventLog(
                 event_id="fixture-commit-0001",
-                work_item_id="apache/kafka@555555555555",
+                work_item_id=f"{FIXTURE_REPO}@555555555555",
                 actor_hash=None,
                 activity="commit",
                 ts=datetime(2026, 7, 4, 9, 0, tzinfo=UTC),
@@ -677,7 +1062,7 @@ def seeded_session(pg_engine):
 
 
 def test_end_to_end_writes_every_table(seeded_session):
-    stats = mg.run(seeded_session, repos=["apache/kafka"])
+    stats = mg.run(seeded_session, repos=[FIXTURE_REPO])
     assert stats.pull_requests == 5
     assert stats.workflow_runs == 2
     assert stats.work_items == 5
@@ -690,7 +1075,7 @@ def test_end_to_end_repoints_the_provisional_commit(seeded_session):
     from app.db.models import EventLog
     from sqlalchemy import select
 
-    mg.run(seeded_session, repos=["apache/kafka"])
+    mg.run(seeded_session, repos=[FIXTURE_REPO])
     seeded_session.flush()
     landed = seeded_session.execute(
         select(EventLog.work_item_id).where(EventLog.event_id == "fixture-commit-0001")
@@ -702,27 +1087,29 @@ def test_end_to_end_ci_run_matches_by_head_sha(seeded_session):
     from app.db.models import CiRun
     from sqlalchemy import select
 
-    mg.run(seeded_session, repos=["apache/kafka"])
+    mg.run(seeded_session, repos=[FIXTURE_REPO])
     seeded_session.flush()
     rows = dict(
-        seeded_session.execute(select(CiRun.run_id, CiRun.work_item_id)).all()
+        seeded_session.execute(
+            select(CiRun.run_id, CiRun.work_item_id).where(CiRun.repo == FIXTURE_REPO)
+        ).all()
     )
-    assert rows["apache/kafka:987654321:1"] == "KAFKA-19777"
-    assert rows["apache/kafka:987654322:2"] is None
+    assert rows[f"{FIXTURE_REPO}:987654321:1"] == "KAFKA-19777"
+    assert rows[f"{FIXTURE_REPO}:987654322:2"] is None
 
 
 def test_end_to_end_is_idempotent(seeded_session):
-    """Decision: a re-run writes the same rows and changes no counts."""
+    """A re-run writes the same rows and changes no counts."""
     from app.db.models import EventLog
     from sqlalchemy import func, select
 
-    mg.run(seeded_session, repos=["apache/kafka"])
+    mg.run(seeded_session, repos=[FIXTURE_REPO])
     seeded_session.flush()
     first = seeded_session.execute(
         select(func.count()).select_from(EventLog)
     ).scalar_one()
 
-    mg.run(seeded_session, repos=["apache/kafka"])
+    mg.run(seeded_session, repos=[FIXTURE_REPO])
     seeded_session.flush()
     second = seeded_session.execute(
         select(func.count()).select_from(EventLog)
@@ -738,34 +1125,457 @@ def test_end_to_end_never_reads_jira(seeded_session):
         RawPayload(
             source="asf_jira",
             entity_type="issue",
-            entity_id="KAFKA-1",
-            body={"repo": "apache/kafka", "number": 1, "title": "KAFKA-1: x"},
+            entity_id="FIXTURE-1",
+            body={"repo": FIXTURE_REPO, "number": 1, "title": "KAFKA-1: x"},
         )
     )
     seeded_session.flush()
-    payloads = mg.load_payloads(seeded_session, repos=["apache/kafka"])
+    payloads = mg.load_payloads(seeded_session, repos=[FIXTURE_REPO])
     assert "asf_jira" not in payloads
-    # Counted per source rather than in total: this database also holds the
-    # developer's real git_local rows, and the claim under test is only that
-    # the Jira row is invisible.
     assert len(payloads["github_graphql"]) == 5
     assert len(payloads["github_actions"]) == 2
 
 
 def test_end_to_end_activities_pass_the_schema_check(seeded_session):
-    """The CHECK constraint is the authority; this proves Postgres accepted
-    every activity we wrote rather than trusting our own list."""
+    """Proves Postgres accepted every activity we wrote, rather than trusting
+    our own list. Scoped to the ids this run produced, since the database also
+    holds the developer's real events."""
     from app.db.models import EventLog
     from sqlalchemy import select
 
-    mg.run(seeded_session, repos=["apache/kafka"])
+    expected_ids = {
+        e["event_id"]
+        for name in PR_FIXTURES
+        for e in mg.map_pull_request(_rehomed(name)).events
+    }
+    mg.run(seeded_session, repos=[FIXTURE_REPO])
     seeded_session.flush()
     written = set(
         seeded_session.execute(
-            select(EventLog.activity).where(EventLog.event_id != "fixture-commit-0001")
+            select(EventLog.activity).where(EventLog.event_id.in_(expected_ids))
         )
         .scalars()
         .all()
     )
     assert written <= set(ACTIVITIES)
     assert {"approved", "changes_requested", "review", "merged"} <= written
+
+
+# --- the CardinalityViolation itself, against real Postgres ----------------
+
+
+def test_three_prs_on_one_ticket_write_exactly_one_row(seeded_session):
+    """The regression test for the crash.
+
+    Three PRs sharing KAFKA-99999 must become one work_item, with MIN
+    opened_at, MAX closed_at and a component that does not depend on the order
+    the payloads arrived in.
+    """
+    from app.db.models import WorkItem
+    from sqlalchemy import select
+
+    for body in (
+        _pr(9001, key="KAFKA-99999", opened="2026-03-01T00:00:00+00:00",
+            closed="2026-03-05T00:00:00+00:00", paths=["core/a.java"]),
+        _pr(9002, key="KAFKA-99999", opened="2026-01-15T00:00:00+00:00",
+            closed="2026-06-20T00:00:00+00:00",
+            paths=["streams/b.java", "streams/c.java"]),
+        _pr(9003, key="KAFKA-99999", opened="2026-02-01T00:00:00+00:00",
+            closed="2026-04-01T00:00:00+00:00", paths=["clients/d.java"]),
+    ):
+        _land_pr(seeded_session, body)
+    seeded_session.flush()
+
+    mg.run(seeded_session, repos=[FIXTURE_REPO])
+    seeded_session.flush()
+
+    rows = seeded_session.execute(
+        select(
+            WorkItem.work_item_id,
+            WorkItem.opened_at,
+            WorkItem.closed_at,
+            WorkItem.component,
+            WorkItem.source_ref,
+        ).where(WorkItem.work_item_id == "KAFKA-99999")
+    ).all()
+    assert len(rows) == 1, "three PRs must collapse to exactly one case row"
+    _, opened, closed, component, source_ref = rows[0]
+    assert opened == datetime(2026, 1, 15, tzinfo=UTC)
+    assert closed == datetime(2026, 6, 20, tzinfo=UTC)
+    assert component == "streams"
+    assert source_ref == f"{FIXTURE_REPO}#9002"
+
+
+def test_repeated_runs_keep_the_merged_component_stable(seeded_session):
+    """Re-running must not flip the component of a merged case."""
+    from app.db.models import WorkItem
+    from sqlalchemy import select
+
+    for number, paths in ((9101, ["streams/a", "streams/b"]), (9102, ["clients/c"])):
+        _land_pr(seeded_session, _pr(number, key="KAFKA-99998", paths=paths))
+    seeded_session.flush()
+
+    seen = []
+    for _ in range(3):
+        mg.run(seeded_session, repos=[FIXTURE_REPO])
+        seeded_session.flush()
+        seen.append(
+            seeded_session.execute(
+                select(WorkItem.component).where(WorkItem.work_item_id == "KAFKA-99998")
+            ).scalar_one()
+        )
+    assert seen == ["streams", "streams", "streams"]
+
+
+def test_stats_report_the_merge(seeded_session):
+    for number in (9201, 9202, 9203):
+        _land_pr(seeded_session, _pr(number, key="KAFKA-99997"))
+    seeded_session.flush()
+
+    stats = mg.run(seeded_session, repos=[FIXTURE_REPO])
+    assert stats.pull_requests == 8
+    assert stats.work_items == 6, "8 PRs, 3 sharing one key -> 6 cases"
+    assert stats.cases_merged == 1
+    assert stats.prs_merged_away == 2
+    assert stats.largest_case == ("KAFKA-99997", 3)
+
+
+# =====================================================================
+# Umbrella flagging — read-time, advisory, changes no row
+#
+# Decision #6 is untouched: these cases stay merged. The flag exists so a
+# cycle-time chart can say which of them are work programmes.
+# =====================================================================
+
+
+def test_run_populates_the_span_report(seeded_session):
+    stats = mg.run(seeded_session, repos=[FIXTURE_REPO])
+    assert stats.spans is not None
+    assert stats.spans.n_cases == stats.work_items, (
+        "every case this run wrote must be in the denominator"
+    )
+
+
+def test_a_wide_case_is_an_umbrella_however_short_it_is(seeded_session):
+    """Eight PRs closed inside a fortnight is still a `[1/N]` series."""
+    from app.normalise.case_span import UMBRELLA_MIN_PRS
+
+    for offset in range(UMBRELLA_MIN_PRS):
+        _land_pr(seeded_session, _pr(9301 + offset, key="KAFKA-99996"))
+    seeded_session.flush()
+
+    stats = mg.run(seeded_session, repos=[FIXTURE_REPO])
+    assert "KAFKA-99996" in {c.work_item_id for c in stats.spans.over_pr_count}
+    assert "KAFKA-99996" in {c.work_item_id for c in stats.spans.umbrellas}
+
+
+def test_a_long_running_case_is_an_umbrella_on_span_alone(seeded_session):
+    """A case that ran most of the window while its neighbours took days.
+
+    Dated relative to the ingestion boundary rather than hardcoded: a fixed
+    2020 date would be silently skipped by the window filter, and any fixed
+    date eventually falls out of a rolling 12-month window and rots the test.
+    """
+    from datetime import timedelta
+
+    opened = mg.window_cutoff() + timedelta(days=5)
+    _land_pr(
+        seeded_session,
+        _pr(9499, key="KAFKA-99400",
+            opened=opened.isoformat(),
+            closed=(opened + timedelta(days=300)).isoformat()),
+    )
+    for offset in range(20):
+        _land_pr(seeded_session, _pr(9401 + offset, key=f"KAFKA-9940{offset:02d}"))
+    seeded_session.flush()
+
+    stats = mg.run(seeded_session, repos=[FIXTURE_REPO])
+    flagged = {c.work_item_id for c in stats.spans.over_span}
+    assert "KAFKA-99400" in flagged
+    assert "KAFKA-99401" not in flagged, "an ordinary 9-day case must not flag"
+
+
+def test_flagging_a_case_does_not_unmerge_it(seeded_session):
+    """The flag is advisory. If it ever started splitting cases it would be
+    quietly overturning decision #6."""
+    from app.db.models import WorkItem
+    from sqlalchemy import func, select
+
+    for offset in range(9):
+        _land_pr(seeded_session, _pr(9501 + offset, key="KAFKA-99995"))
+    seeded_session.flush()
+
+    stats = mg.run(seeded_session, repos=[FIXTURE_REPO])
+    seeded_session.flush()
+    rows = seeded_session.execute(
+        select(func.count())
+        .select_from(WorkItem)
+        .where(WorkItem.work_item_id == "KAFKA-99995")
+    ).scalar_one()
+    assert rows == 1
+    assert "KAFKA-99995" in {c.work_item_id for c in stats.spans.umbrellas}
+
+
+# --- the printed section --------------------------------------------------
+
+
+def _span_report(**kwargs):
+    from app.normalise.case_span import CaseSpan, summarise
+
+    cases = [CaseSpan(f"KAFKA-{i}", 3.0, 1) for i in range(20)]
+    cases.append(CaseSpan("KAFKA-14133", 520.0, 18))
+    return summarise(cases, **kwargs)
+
+
+def test_report_prints_the_rule_the_median_and_the_threshold(capsys):
+    stats = mg.Stats(work_items=21)
+    stats.spans = _span_report()
+    mg._print_report(stats, dry_run=True)
+    out = capsys.readouterr().out
+
+    assert "umbrella cases" in out
+    assert "NOT a stored column" in out
+    assert "is_umbrella = true" in out
+    assert "3.00 days" in out
+    assert "KAFKA-14133" in out
+    assert "Decision #6 stands" in out
+
+
+def test_the_report_stays_ascii(capsys):
+    """Windows terminals turn a stray em dash into a replacement character."""
+    stats = mg.Stats(work_items=21)
+    stats.spans = _span_report()
+    mg._print_report(stats, dry_run=False)
+    capsys.readouterr().out.encode("ascii")
+
+
+def test_report_survives_a_run_with_nothing_closed(capsys):
+    """The state before any PR has merged: no median, so no threshold."""
+    from app.normalise.case_span import CaseSpan, summarise
+
+    stats = mg.Stats(work_items=3)
+    stats.spans = summarise([CaseSpan(f"KAFKA-{i}", None, 1) for i in range(3)])
+    mg._print_report(stats, dry_run=True)
+    out = capsys.readouterr().out
+    assert "no case has both dates yet" in out
+    assert "is_umbrella = true      0 of 3" in out
+
+
+def test_report_omits_the_section_when_the_run_mapped_nothing(capsys):
+    mg._print_report(mg.Stats(), dry_run=True)
+    assert "umbrella cases" not in capsys.readouterr().out
+
+
+# =====================================================================
+# The HISTORY_MONTHS window
+#
+# github_connector pages by UPDATED_AT DESC, so a PR opened in 2015 is in
+# raw_payload the moment somebody comments on it in 2026. Its docstring hands
+# the decision here explicitly. Mapping those PRs stretched the sprint grid
+# from ~26 windows to 289 and produced 177 phantom "merged with no commit".
+# =====================================================================
+
+NOW = datetime(2026, 8, 9, tzinfo=UTC)
+
+
+def test_window_cutoff_matches_the_ingesters_arithmetic():
+    """A cutoff even half a day from git_local's would sort the same fortnight
+    of commits and PRs into different windows."""
+    from datetime import timedelta
+
+    from app.config import get_settings
+
+    months = get_settings().history_months
+    expected = NOW - timedelta(days=round(months * 30.44))
+    assert mg.window_cutoff(NOW) == expected
+
+
+def _within(bodies, stats=None):
+    stats = stats or mg.Stats()
+    return mg._within_window(bodies, stats, now=NOW), stats
+
+
+def test_a_pr_opened_inside_the_window_is_kept():
+    kept, stats = _within([_pr(1, opened="2026-06-01T00:00:00+00:00")])
+    assert len(kept) == 1
+    assert stats.prs_outside_window == 0
+
+
+def test_a_pr_created_and_merged_before_the_boundary_is_skipped():
+    kept, stats = _within([_pr(1, opened="2015-07-21T00:00:00+00:00",
+                               closed="2015-08-01T00:00:00+00:00")])
+    assert kept == []
+    assert stats.prs_outside_window == 1
+    assert stats.prs_created_before_window_kept == 0
+
+
+def test_an_old_pr_that_merged_inside_the_window_is_kept():
+    """Nishant measured 788 of these against the live API, carrying 1,403
+    in-window events and 127 merges. Created in 2023, merged last month: the
+    work landed inside the window whatever the creation date says."""
+    kept, stats = _within([_pr(1, opened="2023-01-01T00:00:00+00:00",
+                               closed="2026-07-01T00:00:00+00:00")])
+    assert len(kept) == 1
+    assert stats.prs_outside_window == 0
+    assert stats.prs_created_before_window_kept == 1
+
+
+def test_mergedat_is_preferred_over_createdat():
+    """The whole switch in one assertion: same PR, judged by the date the work
+    landed rather than the date it was proposed."""
+    body = _pr(1, opened="2023-01-01T00:00:00+00:00",
+               closed="2026-07-01T00:00:00+00:00")
+    assert mg._ts(body["mergedAt"]) > mg.window_cutoff(NOW)
+    assert mg._ts(body["createdAt"]) < mg.window_cutoff(NOW)
+    kept, _ = _within([body])
+    assert len(kept) == 1
+
+
+def test_an_old_pr_that_never_merged_falls_back_to_created_at():
+    """No mergedAt means the only date it has is createdAt, which is exactly
+    what github_connector._content_predates_window does."""
+    kept, stats = _within([_pr(1, opened="2015-01-01T00:00:00+00:00",
+                               closed=None)])
+    assert kept == []
+    assert stats.prs_outside_window == 1
+
+
+def test_a_pr_with_no_dates_at_all_is_kept_not_guessed():
+    body = _pr(1, closed=None)
+    del body["createdAt"]
+    kept, stats = _within([body])
+    assert len(kept) == 1, "an unknown date must not be treated as an old one"
+    assert stats.prs_outside_window == 0
+
+
+def test_the_filter_runs_before_mapping_so_counters_stay_honest():
+    """Bot drops and unmapped review states must describe what we mapped, not
+    what we threw away."""
+    bodies = [_pr(1, opened="2015-01-01T00:00:00+00:00",
+                  closed="2015-02-01T00:00:00+00:00"),
+              _pr(2, opened="2026-06-01T00:00:00+00:00")]
+    stats = mg.Stats()
+    kept = mg._within_window(bodies, stats, now=NOW)
+    assert [b["number"] for b in kept] == [2]
+
+
+def test_report_prints_both_counts(capsys):
+    stats = mg.Stats(prs_outside_window=331, prs_created_before_window_kept=198)
+    mg._print_report(stats, dry_run=True)
+    out = capsys.readouterr().out
+    assert "mergedAt or createdAt" in out
+    assert "331" in out and "198" in out
+    out.encode("ascii")
+
+
+def test_report_omits_the_window_section_when_the_window_did_nothing(capsys):
+    mg._print_report(mg.Stats(), dry_run=True)
+    assert "mergedAt or createdAt" not in capsys.readouterr().out
+
+
+def test_run_skips_out_of_window_prs_end_to_end(seeded_session):
+    from app.db.models import WorkItem
+    from sqlalchemy import select
+
+    _land_pr(seeded_session, _pr(9601, key="KAFKA-OLD1",
+                                 opened="2015-07-21T00:00:00+00:00",
+                                 closed="2015-08-01T00:00:00+00:00"))
+    seeded_session.flush()
+
+    stats = mg.run(seeded_session, repos=[FIXTURE_REPO])
+    seeded_session.flush()
+    assert stats.prs_outside_window == 1
+    landed = seeded_session.execute(
+        select(WorkItem.work_item_id).where(WorkItem.work_item_id == "KAFKA-OLD1")
+    ).scalar_one_or_none()
+    assert landed is None, "an out-of-window PR must not create a case"
+
+
+def test_skipping_never_touches_raw_payload(seeded_session):
+    """Nishant owns ingestion and the raw layer keeps everything it fetched."""
+    from app.db.models import RawPayload
+    from sqlalchemy import func, select
+
+    _land_pr(seeded_session, _pr(9701, key="KAFKA-OLD2",
+                                 opened="2014-01-01T00:00:00+00:00"))
+    seeded_session.flush()
+    before = seeded_session.execute(
+        select(func.count()).select_from(RawPayload)
+    ).scalar_one()
+
+    mg.run(seeded_session, repos=[FIXTURE_REPO])
+    seeded_session.flush()
+    after = seeded_session.execute(
+        select(func.count()).select_from(RawPayload)
+    ).scalar_one()
+    assert after == before
+
+
+# --- opened_at on a case git_local already created ------------------------
+
+
+def test_the_pr_opened_at_wins_when_it_is_earlier(seeded_session):
+    """The 0.00-day median bug.
+
+    git_local creates a case from the squash commit, so its opened_at is the
+    merge instant. Leaving opened_at out of the update set kept that value
+    while closed_at was overwritten with the PR's - and for a squash merge the
+    two are the same second, giving a span of exactly zero.
+    """
+    from app.db.models import WorkItem
+    from sqlalchemy import select
+
+    merge_instant = "2026-07-04T09:00:00+00:00"
+    seeded_session.add(
+        WorkItem(
+            work_item_id="KAFKA-88881",
+            repo=FIXTURE_REPO,
+            component="core",
+            case_source="ticket_key",
+            opened_at=datetime(2026, 7, 4, 9, 0, tzinfo=UTC),
+        )
+    )
+    seeded_session.flush()
+    _land_pr(seeded_session, _pr(9801, key="KAFKA-88881",
+                                 opened="2026-06-01T00:00:00+00:00",
+                                 closed=merge_instant))
+    seeded_session.flush()
+
+    mg.run(seeded_session, repos=[FIXTURE_REPO])
+    seeded_session.flush()
+    opened, closed = seeded_session.execute(
+        select(WorkItem.opened_at, WorkItem.closed_at).where(
+            WorkItem.work_item_id == "KAFKA-88881"
+        )
+    ).one()
+    assert opened == datetime(2026, 6, 1, tzinfo=UTC)
+    assert closed == datetime(2026, 7, 4, 9, 0, tzinfo=UTC)
+    assert (closed - opened).days == 33, "not a zero-length case"
+
+
+def test_an_earlier_commit_still_wins_over_the_pr(seeded_session):
+    """LEAST, not overwrite: work that began before the PR was opened keeps
+    the earlier date, which is git_local's rule and stays git_local's rule."""
+    from app.db.models import WorkItem
+    from sqlalchemy import select
+
+    seeded_session.add(
+        WorkItem(
+            work_item_id="KAFKA-88882",
+            repo=FIXTURE_REPO,
+            case_source="ticket_key",
+            opened_at=datetime(2026, 5, 1, tzinfo=UTC),
+        )
+    )
+    seeded_session.flush()
+    _land_pr(seeded_session, _pr(9802, key="KAFKA-88882",
+                                 opened="2026-06-01T00:00:00+00:00",
+                                 closed="2026-06-10T00:00:00+00:00"))
+    seeded_session.flush()
+
+    mg.run(seeded_session, repos=[FIXTURE_REPO])
+    seeded_session.flush()
+    opened = seeded_session.execute(
+        select(WorkItem.opened_at).where(WorkItem.work_item_id == "KAFKA-88882")
+    ).scalar_one()
+    assert opened == datetime(2026, 5, 1, tzinfo=UTC)

@@ -1,11 +1,72 @@
 """
-Process router — variants and the cost-weighted process graph.
+Process router — the cost-weighted process graph and variants.
 Owner: shared (ingestion + cost data, consumed by Livana's ProcessView —
 the view that leads the Round 2 demo).
 Phase: Tier 0 (this is the end-to-end path the hour-8 gate checks).
 
-Reads variant table (see docs/schema.sql) computed from event_log.
+Every route reads through get_read_session (esi_app, views only — see
+app.waste.discovery / app.waste.variants for the views themselves). No
+route here computes anything; it only shapes what those modules return.
 """
 
-# TODO: FastAPI APIRouter, GET endpoint returning variant graph nodes/edges
-# with per-edge cost weight.
+from __future__ import annotations
+
+from fastapi import APIRouter, Depends
+from sqlalchemy.orm import Session
+
+from app.db.session import get_read_session
+from app.waste.discovery import load_edges
+from app.waste.variants import load_variants, rare_but_costly
+
+router = APIRouter(prefix="/process", tags=["process"])
+
+
+@router.get("/graph")
+def get_graph(repo: str | None = None, session: Session = Depends(get_read_session)):
+    edges = load_edges(session, repo)
+    nodes = sorted(
+        {e.source_activity for e in edges} | {e.target_activity for e in edges}
+    )
+    ranked_by_cost = any(e.cost_exposure > 0 for e in edges)
+    return {
+        "nodes": [{"id": n, "label": n.replace("_", " ").title()} for n in nodes],
+        "edges": [
+            {
+                "from": e.source_activity,
+                "to": e.target_activity,
+                "frequency": e.n_transitions,
+                "nCases": e.n_cases,
+                "medianGapHours": e.median_gap_hours,
+                "costExposure": e.cost_exposure,
+                "significant": e.significant,
+            }
+            for e in edges
+        ],
+        "edgeWeightBasis": "cost" if ranked_by_cost else "frequency",
+        "costNote": None
+        if ranked_by_cost
+        else "No session-inferred or CI cost has landed yet — ranked by "
+        "frequency until config/rates.yaml's rate_card is seeded.",
+    }
+
+
+@router.get("/variants")
+def get_variants(repo: str | None = None, session: Session = Depends(get_read_session)):
+    variants = load_variants(session, repo)
+    modal = next((v for v in variants if v.is_modal), None)
+    return {
+        "variants": [
+            {
+                "variantId": v.variant_id,
+                "repo": v.repo,
+                "activitySequence": v.activity_sequence,
+                "nCases": v.n_cases,
+                "totalCost": v.total_cost,
+                "costSharePct": v.cost_share_pct,
+                "isModal": v.is_modal,
+            }
+            for v in variants
+        ],
+        "modalVariantId": modal.variant_id if modal else None,
+        "rareButCostly": [v.variant_id for v in rare_but_costly(variants)],
+    }

@@ -52,6 +52,18 @@ APP_ROLE_GRANTS: frozenset[str] = frozenset(
         "backtest_result",
         "rate_card",
         "run_config",
+        # Added by migrations/004_process_and_waste_views.sql. Process
+        # discovery + waste detectors; v_actor_component_activity is
+        # deliberately absent — see that view's own comment.
+        "v_collapsed_sequence",
+        "v_transitions_human",
+        "v_edges",
+        "v_case_variant",
+        "v_variants",
+        "v_review_latency_both",
+        "v_ci_waste_minutes",
+        "v_rework_cost",
+        "v_backlog_time_full",
     }
 )
 
