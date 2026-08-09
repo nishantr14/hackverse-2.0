@@ -61,6 +61,13 @@ export interface VariantSummary {
   variant: string;
   shareOfWorkItems: number;
   shareOfCost: number;
+  /**
+   * Cases the classifier put in this variant. The one trustworthy headcount
+   * on this payload — the edges are cost-filtered, so nothing summed across
+   * them is a total of anything.
+   */
+  nCases?: number;
+  totalCost?: number;
 }
 
 /**
@@ -77,11 +84,27 @@ export interface ProcessCoverage {
   note: string | null;
 }
 
+/**
+ * How often finished work was sent back for changes, measured from the event
+ * log rather than counted off the drawn edges.
+ *
+ * It has to arrive as its own figure because the map is cost-filtered: every
+ * inbound edge to `changes_requested` falls outside the top transitions, so
+ * counting them on the graph gives 0 while the log holds 440. `cases` equals
+ * the rework_loop variant's case count by construction — that equality is
+ * what keeps the two figures on the screen from contradicting each other.
+ */
+export interface ReworkReturns {
+  events: number;
+  cases: number;
+}
+
 export interface ProcessGraph {
   nodes: ProcessNode[];
   edges: ProcessEdge[];
   variantSummary: VariantSummary[];
   coverage?: ProcessCoverage;
+  reworkReturns?: ReworkReturns;
 }
 
 export interface SimulatorInput {

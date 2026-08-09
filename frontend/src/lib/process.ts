@@ -66,24 +66,39 @@ export function offHappyPathCostShare(graph: ProcessGraph): number {
     .reduce((s, v) => s + v.shareOfCost, 0);
 }
 
-/** Every return trip to review, across all rework variants. */
-export function reworkPasses(graph: ProcessGraph): number {
-  return graph.edges
-    .filter((e) => e.to === 'changes_requested')
-    .reduce((s, e) => s + e.frequency, 0);
+/**
+ * Times finished work was sent back for changes.
+ *
+ * Read from the backend's measured figure, NOT counted off `graph.edges`.
+ * That is what this used to do, and it reported 0 while the log held 440:
+ * the map keeps only the top transitions by cost, and every inbound edge to
+ * `changes_requested` sits below that cut, so the node renders with nothing
+ * entering it. Deriving a metric from a graph that was deliberately truncated
+ * for legibility produced a screen that said "6% of work takes the rework
+ * loop" directly above "returns to review: 0".
+ *
+ * Returns null rather than 0 when the backend did not send it. A missing
+ * measurement and a measured zero are different facts and the UI shows them
+ * differently.
+ */
+export function reworkPasses(graph: ProcessGraph): number | null {
+  return graph.reworkReturns?.events ?? null;
 }
 
 /**
  * How many work items the log covers.
  *
- * Everything commits exactly once, so the transitions leaving `commit` are a
- * headcount of the work items. That is what makes the variant shares
- * expressible as item counts rather than as bare percentages — 412 × 0.60
- * lands on the 248 that the review → merge edge independently records, which
- * is the check that this reading is right.
+ * Summed from the variant case counts, which are the classifier's own totals
+ * over every case. NOT from the transitions leaving `commit`, which is what
+ * this did and which counted 1,902 against a real 4,949: `graph.edges` is
+ * filtered to the costliest transitions so the map stays legible, so summing
+ * anything across it undercounts by whatever the filter dropped.
+ *
+ * The check that this reading is right: each variant's nCases ÷ its
+ * shareOfWorkItems lands on the same total, independently, three times.
  */
 export function totalWorkItems(graph: ProcessGraph): number {
-  return graph.edges.filter((e) => e.from === 'commit').reduce((s, e) => s + e.frequency, 0);
+  return graph.variantSummary.reduce((s, v) => s + (v.nCases ?? 0), 0);
 }
 
 /**
