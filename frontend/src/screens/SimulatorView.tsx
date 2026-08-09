@@ -6,6 +6,7 @@ import { ErrorPanel } from '../components/Feedback';
 import { GlassCard } from '../components/GlassCard';
 import { Figure, Headline, Name } from '../components/Headline';
 import { ImpactPanel } from '../components/ImpactPanel';
+import { IconDownload } from '../components/Icons';
 import { ScreenHeader } from '../components/ScreenHeader';
 import { getAvailableScenarioInputs, getSimulatorProjects, getSpend, runScenario } from '../data/api';
 import type { SimulatorInput, SimulatorOutput, SpendRow } from '../data/types';
@@ -245,6 +246,25 @@ export function SimulatorView() {
                   >
                     {state.phase === 'calculating' ? 'Running…' : 'Run scenario'}
                   </button>
+                  {state.phase === 'result' && (
+                    <button
+                      type="button"
+                      // Loaded on demand — jsPDF pulls in html2canvas as a
+                      // dependency of a method this file never calls, and
+                      // there is no reason every visitor's initial bundle
+                      // should carry ~270KB for an export nobody has asked
+                      // for yet.
+                      onClick={async () => {
+                        const { exportScenarioPdf } = await import('../lib/exportPdf');
+                        exportScenarioPdf({ input: state.result.input, output: state.result.output });
+                      }}
+                      className="flex h-9 items-center gap-1.5 rounded-lg border px-4 text-[13px] transition-colors"
+                      style={{ color: 'var(--text-secondary)', borderColor: 'var(--border)' }}
+                    >
+                      <IconDownload />
+                      Export PDF
+                    </button>
+                  )}
                   {state.phase !== 'idle' && state.phase !== 'calculating' && (
                     <button
                       type="button"
