@@ -47,6 +47,27 @@ def test_ci_waste_price_fails_closed_without_a_citation():
     assert "ci_cost.source is incomplete" in reason
 
 
+def test_backlog_survives_an_empty_result_set():
+    """Regression: statistics.median raises on an empty list, so /waste/backlog
+    (and /waste/summary, which calls it) used to 500 whenever no case had both
+    a Jira ticket and a first commit. n=0 is a real answer and must render."""
+
+    class _EmptyResult:
+        def all(self):
+            return []
+
+    class _EmptySession:
+        def execute(self, *_args, **_kwargs):
+            return _EmptyResult()
+
+    finding, segments = backlog.detect(_EmptySession())
+    assert finding.hours == 0
+    assert segments == []
+    assert "n=0" in finding.unit_note
+    # Says the measurement is absent rather than implying an observed zero.
+    assert "no median" in finding.unit_note
+
+
 def test_ci_waste_carbon_fails_closed_without_a_citation():
     from decimal import Decimal
 
