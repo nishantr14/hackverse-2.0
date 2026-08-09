@@ -27,6 +27,8 @@ import type {
   SimulatorInput,
   SimulatorOutput,
   SpendRow,
+  StaffingPlan,
+  StaffingPlanInput,
   WasteRow,
   WasteType,
   WorkforceFixture,
@@ -287,4 +289,31 @@ export function getRecommendations(): Promise<Recommendation[]> {
  */
 export function getProjectedImpact(): Promise<ProjectedImpact> {
   return settle(workforce.impact, 500);
+}
+
+/**
+ * POST /workforce/staffing-plan — REAL, not a fixture.
+ *
+ * The one workforce call already wired to the backend. It composes the
+ * recommender and the simulator in a single round trip: who fits the opening,
+ * and what moving that many engineers is projected to cost.
+ *
+ * The `simulation` block is the /simulate response unchanged. It is the same
+ * forecast whoever is recommended — headcount and observed component
+ * throughput drive it, identity does not — so render it as "moving 2
+ * engineers costs X", never as "moving Employee A costs X".
+ *
+ * Throws on a refused scenario: the backend answers 422 with a sentence
+ * explaining why it cannot forecast that pair, and `post` surfaces the
+ * sentence rather than the status code.
+ */
+export function getStaffingPlan(input: StaffingPlanInput): Promise<StaffingPlan> {
+  return post<StaffingPlan>('/workforce/staffing-plan', {
+    sourceProject: input.sourceProject,
+    destProject: input.destProject,
+    engineerCount: input.engineerCount,
+    requiredSkills: input.requiredSkills ?? [],
+    shift: input.shift ?? null,
+    availability: input.availability ?? [],
+  });
 }

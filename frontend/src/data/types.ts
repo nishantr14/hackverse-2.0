@@ -254,3 +254,61 @@ export interface WorkforceFixture {
   recommendations: Recommendation[];
   impact: ProjectedImpact;
 }
+
+/* ---------------------------------------------------------------------------
+ * RAG ↔ SIMULATOR CONTRACT
+ *
+ * `POST /workforce/staffing-plan` composes the two existing endpoints: the
+ * recommender answers WHO, the simulator answers WHAT THE MOVE COSTS.
+ *
+ * THEY COMPOSE, THEY DO NOT JOIN. The forecast is driven by headcount and
+ * observed component throughput — never by which people came back — so the
+ * `simulation` block is identical whoever appears in `recommendedEmployees`.
+ * A UI must not phrase it as "moving Employee A costs ₹X".
+ *
+ * `simulation` is `SimulatorOutput` unchanged. It is deliberately not
+ * re-typed here: there is one definition of what a delta means and it belongs
+ * to the simulator. Note it carries delivery-week deltas and cost — there is
+ * NO reviewLatencyDelta, because the simulator does not produce one.
+ * ------------------------------------------------------------------------- */
+
+export interface RetrievedEvidence {
+  /** 'resume' | 'preference' — which volunteered document this came from. */
+  source: string;
+  /** 'project' | 'experience' | 'skills' | 'preference' */
+  kind: string;
+  /** The chunk, quoted verbatim from the store. Never generated. */
+  text: string;
+  /** BM25 relevance to this scenario. Comparable within one response only. */
+  score: number;
+}
+
+export interface EmployeeRecommendation {
+  employeeId: string;
+  name: string;
+  /** 0–1. Fit against this one opening, not a rating of the person. */
+  matchScore: number;
+  skills: string[];
+  missingSkills: string[];
+  reasons: string[];
+  /** Each weighted component's contribution; sums to matchScore. */
+  scoreBreakdown: Record<string, number>;
+  evidence: RetrievedEvidence[];
+}
+
+export interface StaffingPlanInput {
+  sourceProject: string;
+  destProject: string;
+  engineerCount: number;
+  requiredSkills?: string[];
+  shift?: string;
+  availability?: string[];
+}
+
+export interface StaffingPlan {
+  recommendedEmployees: EmployeeRecommendation[];
+  simulation: SimulatorOutput;
+  /** The retrieval query that produced the shortlist, for transparency. */
+  query: string;
+  note: string;
+}

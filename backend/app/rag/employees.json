@@ -1,0 +1,101 @@
+{
+  "_note": "Stand-in employee store until the workforce backend lands. Replaced by app/rag/store.py:load_employees, not read anywhere else. Profiles match the frontend fixture's three employees so the UI and the API tell the same story; the resume text here is longer because retrieval needs something to retrieve.",
+
+  "employees": [
+    {
+      "employeeId": "employee-a",
+      "name": "Employee A",
+      "resume": {
+        "projects": [
+          "Rebuilt a message-broker consumer group protocol handling 40,000 messages per second, cutting rebalance time on the streaming cluster",
+          "Migrated a monolithic ingest service to an event-driven pipeline using Python and FastAPI, with partitioned topics and idempotent consumers",
+          "Wrote the networking retry and backoff layer for a distributed log client, including TCP connection pooling and broker failover"
+        ],
+        "skills": [
+          "Python",
+          "FastAPI",
+          "PostgreSQL",
+          "Distributed Systems",
+          "Backend",
+          "Kafka",
+          "Networking"
+        ],
+        "experience": [
+          "Four years of backend engineering, two of them on streaming and messaging infrastructure",
+          "Owned on-call for a production broker cluster for six months, handling partition reassignment and network partitions",
+          "Reviews backend pull requests for the platform team"
+        ]
+      },
+      "preferences": {
+        "preferredShift": "evening",
+        "workAreas": ["backend", "data"],
+        "availability": ["mon", "tue", "wed", "thu"],
+        "workStyle": "individual",
+        "openToOtherTeams": true
+      }
+    },
+    {
+      "employeeId": "employee-b",
+      "name": "Employee B",
+      "resume": {
+        "projects": [
+          "Rebuilt a design system across four product surfaces in React and TypeScript",
+          "Shipped an accessibility pass taking the main dashboard to WCAG AA, including keyboard navigation and focus management",
+          "Built the charting layer for an analytics console using SVG and client-side aggregation"
+        ],
+        "skills": [
+          "React",
+          "TypeScript",
+          "CSS",
+          "Accessibility",
+          "Frontend",
+          "Testing"
+        ],
+        "experience": [
+          "Three years of frontend engineering on customer-facing product surfaces",
+          "No backend, infrastructure or distributed systems experience",
+          "Pairs frequently and prefers collaborative design review"
+        ]
+      },
+      "preferences": {
+        "preferredShift": "morning",
+        "workAreas": ["frontend", "testing"],
+        "availability": ["mon", "tue", "wed", "thu", "fri"],
+        "workStyle": "collaborative",
+        "openToOtherTeams": false
+      }
+    },
+    {
+      "employeeId": "employee-c",
+      "name": "Employee C",
+      "resume": {
+        "projects": [
+          "Built the deployment pipeline for a multi-region service using Docker, Terraform and AWS, with blue-green rollout",
+          "Led a container platform migration across more than thirty services, standardising CI and image builds",
+          "Automated cluster networking and load balancer configuration, including VPC peering and DNS failover"
+        ],
+        "skills": [
+          "Docker",
+          "AWS",
+          "Terraform",
+          "CI/CD",
+          "DevOps",
+          "Networking",
+          "Python"
+        ],
+        "experience": [
+          "Five years of platform and DevOps engineering across cloud infrastructure",
+          "Runs the CI fleet and owns runner capacity and cost",
+          "No production experience on streaming or broker systems"
+        ]
+      },
+      "preferences": {
+        "preferredShift": "flexible",
+        "workAreas": ["devops", "backend"],
+        "availability": ["mon", "tue", "wed", "thu", "fri"],
+        "workStyle": "mixed",
+        "openToOtherTeams": true
+      }
+    }
+  ]
+}
