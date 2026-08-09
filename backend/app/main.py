@@ -27,8 +27,8 @@ from app.config import get_settings
 logger = logging.getLogger(__name__)
 
 #: Mount order is display order in /docs. Owners: spend=Diljit, waste=Diljit,
-#: process=Diljit, simulate=Dipen.
-ROUTER_MODULES: tuple[str, ...] = ("spend", "waste", "process", "simulate")
+#: process=Diljit, simulate=Dipen, narrate=Livana.
+ROUTER_MODULES: tuple[str, ...] = ("spend", "waste", "process", "simulate", "narrate")
 
 app = FastAPI(title="Engineering Spend Intelligence")
 

@@ -128,8 +128,11 @@ def test_allowed_origins_list_splits_csv():
     ]
 
 
-def test_all_four_routers_are_known_even_before_they_exist():
-    assert set(ROUTER_MODULES) == {"spend", "waste", "process", "simulate"}
+def test_every_router_is_known_even_before_it_exists():
+    # Exact, not a subset: a router silently disappearing from this tuple is
+    # a route silently disappearing from the API, and main.py skips missing
+    # modules by design, so nothing else would fail.
+    assert set(ROUTER_MODULES) == {"spend", "waste", "process", "simulate", "narrate"}
 
 
 # --- static privacy check ------------------------------------------------

@@ -36,7 +36,7 @@ def components(pg_engine):
 def test_every_router_the_frontend_needs_is_mounted():
     from app.main import MOUNTED_ROUTERS
 
-    assert set(MOUNTED_ROUTERS) == {"spend", "waste", "process", "simulate"}
+    assert set(MOUNTED_ROUTERS) == {"spend", "waste", "process", "simulate", "narrate"}
 
 
 # --- cost attribution ----------------------------------------------------
