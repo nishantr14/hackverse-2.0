@@ -93,8 +93,8 @@ export function WasteView() {
       id: 'default',
       body: (
         <>
-          <Figure color="var(--amber)">{formatMoney(recoverable)}</Figure> of engineering time this
-          quarter bought nothing that still exists.
+          <Figure color="var(--amber)">{formatMoney(recoverable)}</Figure> of engineering time in
+          the last 12 months bought nothing that still exists.
         </>
       ),
       sub:

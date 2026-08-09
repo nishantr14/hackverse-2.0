@@ -90,7 +90,7 @@ export function ProcessView() {
           they burn <Figure>{formatPercent(worst.shareOfCost, 0)}</Figure> of the money.
         </>
       ),
-      sub: `${items} work items went from first commit to deploy this quarter. They took three different routes, and the routes did not cost the same.`,
+      sub: `${items} work items went from first commit to deploy in the last 12 months. They took three different routes, and the routes did not cost the same.`,
     };
   }
 
@@ -220,7 +220,7 @@ export function ProcessView() {
                   What each route is worth
                 </h2>
                 <p className="text-[12.5px] text-[var(--text-secondary)]">
-                  {items} work items took one of three routes this quarter.
+                  {items} work items took one of three routes in the last 12 months.
                 </p>
               </div>
               <div className="mt-5 grid gap-x-8 gap-y-5 sm:grid-cols-3">

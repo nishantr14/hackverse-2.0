@@ -77,7 +77,7 @@ export function SpendView() {
           <>
             <Name color={c.base}>{focusComponent.component}</Name> cost{' '}
             <Figure>{formatMoney(focusComponent.cost)}</Figure> — that is{' '}
-            {formatPercent(focusComponent.cost / total)} of the quarter&rsquo;s engineering spend.
+            {formatPercent(focusComponent.cost / total)} of engineering spend in the last 12 months.
           </>
         ),
         sub: `${focusComponent.project} · ${focusComponent.workItems.length} work item${
@@ -94,7 +94,7 @@ export function SpendView() {
           <>
             <Name color={c.base}>{focusedProject.project}</Name> took{' '}
             <Figure>{formatMoney(focusedProject.cost)}</Figure> —{' '}
-            {formatPercent(focusedProject.cost / total)} of everything this quarter.
+            {formatPercent(focusedProject.cost / total)} of everything in the last 12 months.
           </>
         ),
         sub: `${focusedProject.workItems} work items across ${
@@ -112,7 +112,7 @@ export function SpendView() {
       body: (
         <>
           <Name color={colorFor(palette, topProject.project).base}>{topProject.project}</Name> is
-          the most expensive project this quarter — <Figure>{formatMoney(topProject.cost)}</Figure>{' '}
+          the most expensive project in the last 12 months — <Figure>{formatMoney(topProject.cost)}</Figure>{' '}
           of a <Figure>{formatMoney(total)}</Figure> engineering bill.
         </>
       ),
