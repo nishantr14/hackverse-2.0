@@ -14,6 +14,9 @@
  * showing zeros because a fetch failed is the one outcome worse than an error.
  */
 
+// The four analytics fixtures are gone — those screens read the real backend
+// now. This one stays until the workforce services exist; see the WORKFORCE
+// section at the foot of this file.
 import processFixture from '../mock-data/process.json';
 import simulatorFixture from '../mock-data/simulator.json';
 import spendFixture from '../mock-data/spend.json';
@@ -233,6 +236,18 @@ export function getMeta(): Promise<Meta> {
  * ------------------------------------------------------------------------- */
 
 const workforce = workforceFixture as unknown as WorkforceFixture;
+
+/**
+ * Simulated latency for the workforce mocks only.
+ *
+ * The analytics endpoints have real network time now, so the shared helper
+ * this replaces went with the fixtures. These four still resolve instantly
+ * from a bundled JSON file, and a loading state that never renders is a
+ * loading state nobody notices is broken when the real call is slow.
+ */
+function settle<T>(value: T, ms = 260): Promise<T> {
+  return new Promise((resolve) => setTimeout(() => resolve(value), ms));
+}
 
 /**
  * POST /workforce/preferences
