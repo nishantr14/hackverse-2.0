@@ -65,6 +65,29 @@ class Resume:
 
 
 @dataclass(frozen=True)
+class Staffing:
+    """Where this person works and what they would accept. ALL DECLARED.
+
+    None of it is observed. Which component somebody actually commits to is
+    knowable only through `actor_hash`, so reading it off the event log would
+    be the join this layer exists not to make — `current_component` is what the
+    employee SAID, which is also why it is safe to hand to `/simulate` as a
+    source key: the request that follows is about components, not about them.
+
+    Nothing here is scored. `matching.py` does not import this class.
+    """
+
+    primary_role: str
+    #: A real `/simulate` component key, e.g. "apache/kafka/core".
+    current_component: str
+    current_location: str
+    preferred_locations: tuple[str, ...]
+    open_to_relocation: bool
+    #: Self-reported load. NOT throughput, NOT items merged, NOT observed.
+    current_workload: str
+
+
+@dataclass(frozen=True)
 class Preferences:
     preferred_shift: str
     work_areas: tuple[str, ...]
@@ -84,6 +107,7 @@ class Candidate:
     employee_id: str
     name: str
     resume: Resume
+    staffing: Staffing
     preferences: Preferences
 
 
@@ -99,7 +123,8 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS employee_profile (
     employee_id      TEXT PRIMARY KEY,
     name             TEXT NOT NULL,
-    resume_json      TEXT NOT NULL
+    resume_json      TEXT NOT NULL,
+    staffing_json    TEXT NOT NULL DEFAULT '{}'
 );
 -- Separate table, not a nullable column on the profile: the absence of a row
 -- here is the absence of consent, and a missing row is harder to fill in by
@@ -114,30 +139,58 @@ CREATE TABLE IF NOT EXISTS employee_preferences (
 
 
 def ensure_seeded(path: Path | None = None) -> Path:
-    """Create the store and load the seed once. Idempotent."""
+    """Create the store and load the seed. Idempotent.
+
+    The two tables are seeded on DIFFERENT rules, because they are different
+    kinds of data. Profiles are reference data we ship, so they are upserted on
+    every call and a change to the seed file reaches an existing database.
+    Preferences are submissions, so they are written only into an empty table —
+    re-seeding them would silently overwrite what somebody entered through
+    `POST /workforce/preferences`, which is the one write this package has.
+    """
     db = path or DEFAULT_DB_PATH
     with _connect(db) as conn:
         conn.executescript(SCHEMA)
-        already = conn.execute("SELECT count(*) FROM employee_profile").fetchone()[0]
-        if already:
-            return db
+        # Databases created before staffing existed. Cheaper than a migration
+        # framework for one column, and the store is a rebuildable seed anyway.
+        columns = {r["name"] for r in conn.execute("PRAGMA table_info(employee_profile)")}
+        if "staffing_json" not in columns:
+            conn.execute(
+                "ALTER TABLE employee_profile "
+                "ADD COLUMN staffing_json TEXT NOT NULL DEFAULT '{}'"
+            )
+
         seed = json.loads(SEED_PATH.read_text(encoding="utf-8"))
         conn.executemany(
-            "INSERT INTO employee_profile (employee_id, name, resume_json) "
-            "VALUES (?, ?, ?)",
+            "INSERT INTO employee_profile "
+            "  (employee_id, name, resume_json, staffing_json) VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(employee_id) DO UPDATE SET "
+            "  name = excluded.name, "
+            "  resume_json = excluded.resume_json, "
+            "  staffing_json = excluded.staffing_json",
             [
-                (p["employeeId"], p["name"], json.dumps(p["resume"]))
+                (
+                    p["employeeId"],
+                    p["name"],
+                    json.dumps(p["resume"]),
+                    json.dumps(p.get("staffing") or {}),
+                )
                 for p in seed["profiles"]
             ],
         )
-        conn.executemany(
-            "INSERT INTO employee_preferences "
-            "(employee_id, preferences_json, submitted_at) VALUES (?, ?, ?)",
-            [
-                (p["employeeId"], json.dumps(p), "2026-08-10T00:00:00Z")
-                for p in seed["preferences"]
-            ],
-        )
+        submitted = conn.execute(
+            "SELECT count(*) FROM employee_preferences"
+        ).fetchone()[0]
+        if not submitted:
+            conn.executemany(
+                "INSERT INTO employee_preferences "
+                "(employee_id, preferences_json, submitted_at) VALUES (?, ?, ?)",
+                [
+                    (p["employeeId"], json.dumps(p), "2026-08-10T00:00:00Z")
+                    for p in seed["preferences"]
+                ],
+            )
+    _cached_candidates.cache_clear()
     return db
 
 
@@ -148,6 +201,17 @@ def _resume(raw: dict[str, Any]) -> Resume:
         experience=tuple(raw.get("experience") or ()),
         years_experience=float(raw.get("yearsExperience") or 0),
         familiar_components=tuple(raw.get("familiarComponents") or ()),
+    )
+
+
+def _staffing(raw: dict[str, Any]) -> Staffing:
+    return Staffing(
+        primary_role=str(raw.get("primaryRole") or "Engineer"),
+        current_component=str(raw.get("currentComponent") or ""),
+        current_location=str(raw.get("currentLocation") or ""),
+        preferred_locations=tuple(raw.get("preferredLocations") or ()),
+        open_to_relocation=bool(raw.get("openToRelocation")),
+        current_workload=str(raw.get("currentWorkload") or "normal"),
     )
 
 
@@ -170,7 +234,8 @@ def named_candidates(path: Path | None = None) -> list[Candidate]:
     db = ensure_seeded(path)
     with _connect(db) as conn:
         rows = conn.execute(
-            "SELECT p.employee_id, p.name, p.resume_json, f.preferences_json "
+            "SELECT p.employee_id, p.name, p.resume_json, p.staffing_json, "
+            "       f.preferences_json "
             "  FROM employee_profile p "
             "  JOIN employee_preferences f USING (employee_id) "
             " ORDER BY p.employee_id"
@@ -180,6 +245,7 @@ def named_candidates(path: Path | None = None) -> list[Candidate]:
             employee_id=r["employee_id"],
             name=r["name"],
             resume=_resume(json.loads(r["resume_json"])),
+            staffing=_staffing(json.loads(r["staffing_json"] or "{}")),
             preferences=_preferences(json.loads(r["preferences_json"])),
         )
         for r in rows

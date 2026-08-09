@@ -1,5 +1,6 @@
 import type { Candidate, Opening } from '../data/types';
 import { FEASIBILITY_LABEL, feasibility } from '../lib/reallocation';
+import { FIT_DIMENSION_LABEL } from '../lib/workforce';
 import { GlassCard } from './GlassCard';
 
 /**
@@ -23,6 +24,17 @@ const WORKLOAD_LABEL: Record<Candidate['currentWorkload'], string> = {
   heavy: 'Heavy',
 };
 
+/**
+ * The skill term out of the fit breakdown.
+ *
+ * Looked up by the shared label constant rather than a string typed in here:
+ * the label is written in one place and read in two, and a silent rename would
+ * otherwise turn this row into a column of zeroes rather than an error.
+ */
+function skillPoints(c: Candidate): number {
+  return c.contributions.find((x) => x.label === FIT_DIMENSION_LABEL.skillMatch)?.points ?? 0;
+}
+
 interface Row {
   label: string;
   render: (c: Candidate) => string;
@@ -43,10 +55,9 @@ export function CandidateCompare({
 
   const rows: Row[] = [
     {
-      label: 'Target capability',
-      render: (c) =>
-        `${c.contributions.find((x) => x.label === 'Target-component capability')?.points ?? 0}%`,
-      best: (c) => c.contributions.find((x) => x.label === 'Target-component capability')?.points ?? 0,
+      label: 'Required skills matched',
+      render: (c) => `${skillPoints(c)}%`,
+      best: skillPoints,
     },
     {
       label: 'Relevant experience',

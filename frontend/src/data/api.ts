@@ -18,10 +18,18 @@
 // now. This one stays until the workforce services exist; see the WORKFORCE
 // section at the foot of this file.
 import workforceFixture from '../mock-data/workforce.json';
+import {
+  FIT_DIMENSION_BASIS,
+  FIT_DIMENSION_LABEL,
+  FIT_DIMENSIONS,
+} from '../lib/workforce';
 import type {
   Candidate,
+  DataBasis,
+  DerivedRequirement,
   EmployeePreferences,
   EmployeeRecommendation,
+  FitContribution,
   NamedSimulatorOutput,
   Opening,
   ProcessGraph,
@@ -353,8 +361,16 @@ export function getRecommendationSet(
  * inside the component: "matched" means the dimension scored full marks, and
  * anything less shows as not met so a partial match is never rendered as a
  * clean tick.
+ *
+ * The requirement is passed in rather than reconstructed from the candidate.
+ * The evidence panel prints "what the opening asked for" beside "what they
+ * said", and filling the first from the second would make every candidate look
+ * like an exact match for their own preferences.
  */
-export function toRecommendation(rec: EmployeeRecommendation): Recommendation {
+export function toRecommendation(
+  rec: EmployeeRecommendation,
+  req: DerivedRequirement,
+): Recommendation {
   return {
     employee: rec.name,
     match: rec.matchPercent,
@@ -374,28 +390,127 @@ export function toRecommendation(rec: EmployeeRecommendation): Recommendation {
         availability: rec.evidence.declaredAvailability,
       },
       requirement: {
-        requiredSkills: rec.matchedSkills.concat(rec.missingSkills),
-        requiredShift: rec.evidence.declaredShift,
-        requiredAvailability: rec.evidence.declaredAvailability,
+        requiredSkills: req.requiredSkills,
+        requiredShift: req.preferredShift,
+        requiredAvailability: req.requiredAvailability,
       },
       policies: [
         'A reallocation is proposed to the employee, never applied without their acknowledgement.',
         'Only employees who submitted a preference record can be named at all.',
+        'Relocation is only proposed where the employee has opted in.',
       ],
     },
   };
 }
 
-/** Kept for the Workforce screen's existing call site. */
-export async function getRecommendations(): Promise<Recommendation[]> {
-  const req = workforce.requirement;
+/**
+ * The five weighted dimensions as signed terms, for `WhyBreakdown`.
+ *
+ * NOT A RESHAPE FOR THE SAKE OF THE COMPONENT. `contributions` from the engine
+ * is weight x sub-score and sums to the score; `FitContribution.points` is the
+ * same quantity in percentage points, which is why the breakdown can still be
+ * checked by hand against the headline. The two things that had to be got
+ * right are the basis labels — assigned per dimension in `lib/workforce`,
+ * because that field states where a factor came from — and the rounding.
+ *
+ * Rounding is largest-remainder, not per-term `Math.round`. Five independently
+ * rounded terms drift up to two points off the total, and the component prints
+ * "sums to" directly under the headline, so the drift would be visible and
+ * would read as the arithmetic not adding up.
+ */
+export function toContributions(rec: EmployeeRecommendation): FitContribution[] {
+  const raw = FIT_DIMENSIONS.map((d) => ({ d, exact: rec.contributions[d] * 100 }));
+  const floors = raw.map((r) => ({ ...r, points: Math.floor(r.exact) }));
+  let short = rec.matchPercent - floors.reduce((sum, r) => sum + r.points, 0);
+
+  // Hand the leftover points to the largest fractional parts, so the set sums
+  // to exactly the percentage shown next to the name.
+  for (const r of [...floors].sort((a, b) => b.exact - b.points - (a.exact - a.points))) {
+    if (short <= 0) break;
+    r.points += 1;
+    short -= 1;
+  }
+
+  return floors.map((r) => ({
+    label: FIT_DIMENSION_LABEL[r.d],
+    points: r.points,
+    basis: FIT_DIMENSION_BASIS[r.d],
+  }));
+}
+
+/**
+ * The wire type as the director's card wants it: a fit plus the declared facts
+ * a staffing decision turns on.
+ *
+ * Everything added here comes from `rec.staffing`, which the backend carries
+ * beside the score rather than through it. Nothing is invented in this
+ * function, and nothing observed enters it.
+ */
+export function toCandidate(
+  rec: EmployeeRecommendation,
+  req: DerivedRequirement,
+): Candidate {
+  const s = rec.staffing;
+  return {
+    ...toRecommendation(rec, req),
+    candidateId: rec.employeeId,
+    primaryRole: s.primaryRole,
+    experienceYears: rec.experienceYears,
+    currentLocation: s.currentLocation,
+    currentComponent: s.currentComponent,
+    // "apache/kafka/core" -> "apache/kafka / core". Split on the LAST separator.
+    currentComponentLabel: s.currentComponent.replace(/\/([^/]*)$/, ' / $1'),
+    openToRelocation: s.openToRelocation,
+    preferredLocations: s.preferredLocations,
+    currentWorkload: s.currentWorkload,
+    contributions: toContributions(rec),
+  };
+}
+
+/** What the Workforce screen renders: the ranked people AND the disclosures. */
+export interface CandidateSet {
+  candidates: Candidate[];
+  /** The scenario the opening was translated into, as the engine derived it. */
+  requirement: DerivedRequirement;
+  /** Counted, never named. The consent gate, made visible. */
+  anonymousCapacity: WorkforceRecommendationSet['anonymousCapacity'];
+  excluded: WorkforceRecommendationSet['excluded'];
+  dataBasis: DataBasis;
+  privacyBasis: string;
+  humanInTheLoop: WorkforceRecommendationSet['humanInTheLoop'];
+}
+
+/**
+ * POST /workforce/recommend, for one opening.
+ *
+ * THE OPENING IS MAPPED ONTO THE SCENARIO THE ENGINE ALREADY TAKES rather than
+ * given a requirement path of its own: `simulateKey` is the component, and the
+ * headcount, shift and availability the opening publishes are the scenario's.
+ * The engine derives the required skills from the component itself, so the
+ * requirement it answers with is the one to show — `opening.requiredSkills` is
+ * what the fixture said the opening wanted, and the two can disagree.
+ *
+ * Alternates are appended to the recommended set because the screen's job is
+ * to show who was considered, not only who won.
+ */
+export async function getRecommendations(opening: Opening): Promise<CandidateSet> {
   const set = await getRecommendationSet(
-    `apache/kafka/${req.component.toLowerCase()}`,
-    req.engineersRequired,
-    req.requiredShift,
-    req.requiredAvailability,
+    opening.simulateKey,
+    opening.engineersRequired,
+    opening.requiredShift,
+    opening.requiredAvailability,
   );
-  return set.recommendedEmployees.concat(set.alternates).map(toRecommendation);
+  return {
+    candidates: set.recommendedEmployees
+      .concat(set.alternates)
+      .map((r) => toCandidate(r, set.requirement)),
+    requirement: set.requirement,
+    anonymousCapacity: set.anonymousCapacity,
+    excluded: set.excluded,
+    dataBasis: set.dataBasis,
+    privacyBasis: set.privacyBasis,
+    humanInTheLoop: set.humanInTheLoop,
+  };
 }
 
 /**

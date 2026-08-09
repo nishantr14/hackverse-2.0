@@ -1,4 +1,4 @@
-import type { Shift, Weekday, WorkArea, WorkStyle } from '../data/types';
+import type { FitContribution, FitDimension, Shift, Weekday, WorkArea, WorkStyle } from '../data/types';
 
 /**
  * Display labels and option lists for the workforce layer.
@@ -37,6 +37,47 @@ export const WORK_STYLE_LABEL: Record<WorkStyle, string> = {
   collaborative: 'Collaboratively',
   mixed: 'A mix of both',
 };
+
+/* ---------------------------------------------------------------------------
+ * THE FIVE FIT DIMENSIONS
+ *
+ * The engine returns them keyed by `FitDimension`; the cards render them as
+ * `FitContribution`, which carries a human label and — the part that matters —
+ * a BASIS saying where the factor came from. That field is a truth claim, so
+ * it is assigned once, here, per dimension rather than at each call site:
+ *
+ *   requirement  the opening asked for it (the required skills, derived from
+ *                the component)
+ *   volunteered  the employee stated it on the preference form
+ *   assumption   we read it off a resume and took it at its word — nothing
+ *                verifies years, project history or declared familiarity, and
+ *                calling those "volunteered" would overstate what they are
+ * ------------------------------------------------------------------------- */
+
+export const FIT_DIMENSION_LABEL: Record<FitDimension, string> = {
+  skillMatch: 'Required skills on the resume',
+  experienceMatch: 'Relevant years and project history',
+  preferenceMatch: 'Declared work areas and shift',
+  availabilityMatch: 'Declared availability',
+  projectFamiliarity: 'Declared familiarity with this component',
+};
+
+export const FIT_DIMENSION_BASIS: Record<FitDimension, FitContribution['basis']> = {
+  skillMatch: 'requirement',
+  experienceMatch: 'assumption',
+  preferenceMatch: 'volunteered',
+  availabilityMatch: 'volunteered',
+  projectFamiliarity: 'assumption',
+};
+
+/** Read order on the card: heaviest weight first, so the biggest term leads. */
+export const FIT_DIMENSIONS: readonly FitDimension[] = [
+  'skillMatch',
+  'experienceMatch',
+  'preferenceMatch',
+  'availabilityMatch',
+  'projectFamiliarity',
+];
 
 /** Turns a label map into the `{ value, label }` list the chip pickers take. */
 function options<T extends string>(map: Record<T, string>): readonly { value: T; label: string }[] {

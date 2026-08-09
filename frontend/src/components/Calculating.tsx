@@ -18,13 +18,34 @@ const STEPS = [
   'Sampling delivery outcomes for the P10–P90 band',
 ];
 
-export function Calculating({ stepMs = 240 }: { stepMs?: number }) {
+/**
+ * Recommendation retrieval, which touches none of the above.
+ *
+ * The default steps describe the FORECAST. Showing them while ranking people
+ * would put "Reading the event log" on screen directly beneath the sentence
+ * promising that this ranking never reads the event log — a progress list is
+ * still a claim about what the software is doing, and this one would be false.
+ */
+export const RECOMMENDATION_STEPS = [
+  'Deriving what the component needs from the opening',
+  'Retrieving profiles with a submitted preference record',
+  'Scoring declared skills, preferences and availability',
+  'Ranking, and separating stated boundaries from low scores',
+];
+
+export function Calculating({
+  stepMs = 240,
+  steps = STEPS,
+}: {
+  stepMs?: number;
+  steps?: readonly string[];
+}) {
   const [step, setStep] = useState(0);
 
   useEffect(() => {
-    const id = setInterval(() => setStep((s) => Math.min(s + 1, STEPS.length - 1)), stepMs);
+    const id = setInterval(() => setStep((s) => Math.min(s + 1, steps.length - 1)), stepMs);
     return () => clearInterval(id);
-  }, [stepMs]);
+  }, [stepMs, steps.length]);
 
   return (
     <div role="status" aria-live="polite" className="flex flex-col gap-6">
@@ -56,7 +77,7 @@ export function Calculating({ stepMs = 240 }: { stepMs?: number }) {
       </div>
 
       <ul className="flex flex-col gap-2">
-        {STEPS.map((s, i) => (
+        {steps.map((s, i) => (
           <motion.li
             key={s}
             className="flex items-center gap-3 text-[12.5px]"

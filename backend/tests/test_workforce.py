@@ -169,6 +169,58 @@ def test_the_workforce_package_cannot_reach_the_analytics_layer():
             ), f"{module.__name__} imports {name}, which can reach the warehouse"
 
 
+def test_the_scorer_never_reads_the_declared_staffing_block():
+    """Where somebody lives may not move them up or down a ranking.
+
+    `staffing` carries location, willingness to relocate and self-reported
+    load. All three are legitimate inputs to a STAFFING DECISION and none is a
+    legitimate input to a FIT SCORE — scoring somebody down for declining to
+    relocate would turn an honest answer on a form into a quiet penalty. The
+    block is therefore routed around `matching.py` by the router rather than
+    through it, and this asserts that arrangement instead of trusting it.
+
+    Docstrings stripped, for the same reason as the analytics-layer test: this
+    module explains the rule it must not break.
+    """
+    import ast
+
+    tree = ast.parse(Path(matching.__file__).read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        if isinstance(
+            node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
+        ) and ast.get_docstring(node):
+            node.body = node.body[1:]
+    source = ast.unparse(tree)
+    for token in (
+        "staffing",
+        "current_location",
+        "preferred_locations",
+        "open_to_relocation",
+        "current_workload",
+        "primary_role",
+    ):
+        assert token not in source, f"matching.py reads {token!r}, which it may not score"
+
+
+def test_a_named_card_carries_the_declared_staffing_it_needs(seeded):
+    """The director's card cannot render without these, and a `{}` staffing
+    block would degrade it silently rather than fail."""
+    body = build_recommendations(
+        RecommendRequest(component="apache/kafka/clients", engineerCount=2,
+                         shift="evening")
+    )
+    cards = body["recommendedEmployees"] + body["alternates"]
+    assert cards
+    for card in cards:
+        s = card["staffing"]
+        assert s["currentComponent"].count("/") == 2, s["currentComponent"]
+        assert s["currentLocation"]
+        assert s["primaryRole"]
+        assert s["currentWorkload"] in {"light", "normal", "heavy"}
+        assert isinstance(s["openToRelocation"], bool)
+        assert card["experienceYears"] > 0
+
+
 # --- LABELLED AS MODELLED --------------------------------------------------
 
 

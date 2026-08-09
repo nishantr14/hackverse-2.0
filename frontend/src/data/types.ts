@@ -300,6 +300,27 @@ export interface EmployeeRecommendation {
   /** Honest caveats — a partial shift match, a missing day, an absent skill. */
   flags: string[];
   evidence: EmployeeEvidence;
+  experienceYears: number;
+  /**
+   * What a staffing decision needs and the fit score deliberately does not use.
+   * Carried alongside the score, never into it — the backend passes it around
+   * `matching.py` rather than through it for exactly that reason.
+   */
+  staffing: DeclaredStaffing;
+}
+
+/** Declared, never observed. Reading any of it off the event log would need
+ *  the employeeId → actor_hash join this product states it does not make. */
+export interface DeclaredStaffing {
+  primaryRole: string;
+  /** A real `/simulate` component key — where they SAID they work. */
+  currentComponent: string;
+  currentLocation: string;
+  preferredLocations: string[];
+  openToRelocation: boolean;
+  /** Self-reported load. Not throughput, not items merged, not observed. */
+  currentWorkload: Workload;
+  basis: string;
 }
 
 export interface DerivedRequirement {

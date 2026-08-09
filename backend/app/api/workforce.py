@@ -65,14 +65,21 @@ class PreferencesRequest(BaseModel):
     model_config = {"populate_by_name": True}
 
 
-def serialise_fit(fit: matching.Fit) -> dict[str, Any]:
+def serialise_fit(fit: matching.Fit, candidate: store.Candidate) -> dict[str, Any]:
     """The named payload.
 
     EVERY KEY HERE IS DECLARED OR RESUME-DERIVED. There is deliberately no
     cycle time, throughput, review count, items merged, capability index or
     rank-against-others field, and `test_workforce.py` asserts their absence
     rather than trusting this comment.
+
+    `staffing` is carried on the response but NOT through `matching.py`, which
+    never sees it. It is what a staffing decision needs and a fit score must
+    not use: where somebody is, whether they would move, what they say they are
+    carrying. Passing it around the scorer rather than through it is what keeps
+    "none of this is ranked on" checkable instead of asserted.
     """
+    s = candidate.staffing
     return {
         "employeeId": fit.employee_id,
         "name": fit.name,
@@ -86,6 +93,19 @@ def serialise_fit(fit: matching.Fit) -> dict[str, Any]:
         "reasons": list(fit.reasons),
         "flags": list(fit.flags),
         "evidence": fit.evidence,
+        "experienceYears": candidate.resume.years_experience,
+        "staffing": {
+            "primaryRole": s.primary_role,
+            "currentComponent": s.current_component,
+            "currentLocation": s.current_location,
+            "preferredLocations": list(s.preferred_locations),
+            "openToRelocation": s.open_to_relocation,
+            "currentWorkload": s.current_workload,
+            "basis": (
+                "Declared by the employee. Not observed, not scored — "
+                "matching.py never reads these fields."
+            ),
+        },
     }
 
 
@@ -113,13 +133,16 @@ def build_recommendations(body: RecommendRequest) -> dict[str, Any]:
     )
     candidates = store.named_candidates()
     fits, excluded = matching.rank(candidates, req, cross_team=body.cross_team)
+    # Only ever keyed by someone `named_candidates()` already returned, so the
+    # consent gate is upstream of this and cannot be reopened by a lookup.
+    by_id = {c.employee_id: c for c in candidates}
 
     top = fits[: body.engineer_count]
     alternates = fits[body.engineer_count : body.engineer_count + 3]
     return {
         "requirement": serialise_requirement(req),
-        "recommendedEmployees": [serialise_fit(f) for f in top],
-        "alternates": [serialise_fit(f) for f in alternates],
+        "recommendedEmployees": [serialise_fit(f, by_id[f.employee_id]) for f in top],
+        "alternates": [serialise_fit(f, by_id[f.employee_id]) for f in alternates],
         "excluded": [
             {"employeeId": e.employee_id, "name": e.name, "reason": e.reason}
             for e in excluded

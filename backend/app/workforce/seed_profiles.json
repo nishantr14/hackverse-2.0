@@ -1,14 +1,18 @@
 {
   "_basis": "MODELLED, NOT VOLUNTEERED. Our 1,725 actors are pseudonymised Apache contributors who filled in no form and supplied no resume, so there is no real preference or resume data to load. Every profile below is invented to exercise the matching engine, and the API returns dataBasis.volunteered=false on every response so the UI says so on screen. Replace this file wholesale the day real submissions exist; nothing in the code reads a name from anywhere else.",
-
   "_consent": "An employee is NAMED only if they appear in `preferences`. The two entries missing from it are there on purpose: emp-007 is the strongest resume in the file and must never surface by name, which is what makes the consent gate demonstrably load-bearing rather than decorative.",
-
   "profiles": [
     {
       "employeeId": "emp-001",
       "name": "Aarti Venkatesh",
       "resume": {
-        "skills": ["Java", "Scala", "Stream Processing", "Distributed Systems", "Concurrency"],
+        "skills": [
+          "Java",
+          "Scala",
+          "Stream Processing",
+          "Distributed Systems",
+          "Concurrency"
+        ],
         "projects": [
           "Rebuilt a stateful stream join operator handling 40k events/s",
           "Cut rebalance time on a 200-partition consumer group by 60%"
@@ -18,14 +22,34 @@
           "Owned on-call for a stream-processing cluster for 18 months"
         ],
         "yearsExperience": 6,
-        "familiarComponents": ["streams", "core"]
+        "familiarComponents": [
+          "streams",
+          "core"
+        ]
+      },
+      "staffing": {
+        "primaryRole": "Backend Engineer",
+        "currentComponent": "apache/kafka/core",
+        "currentLocation": "Hyderabad",
+        "preferredLocations": [
+          "Bangalore",
+          "Hyderabad"
+        ],
+        "openToRelocation": true,
+        "currentWorkload": "normal"
       }
     },
     {
       "employeeId": "emp-002",
       "name": "Rohan Mehta",
       "resume": {
-        "skills": ["Java", "Distributed Systems", "Concurrency", "Storage Systems", "File I/O"],
+        "skills": [
+          "Java",
+          "Distributed Systems",
+          "Concurrency",
+          "Storage Systems",
+          "File I/O"
+        ],
         "projects": [
           "Designed a segmented write-ahead log with tiered retention",
           "Reduced broker recovery time after unclean shutdown by 45%"
@@ -35,14 +59,35 @@
           "Led the migration of a log-compaction subsystem"
         ],
         "yearsExperience": 4,
-        "familiarComponents": ["storage", "core"]
+        "familiarComponents": [
+          "storage",
+          "core"
+        ]
+      },
+      "staffing": {
+        "primaryRole": "Backend Engineer",
+        "currentComponent": "apache/kafka/storage",
+        "currentLocation": "Pune",
+        "preferredLocations": [
+          "Pune",
+          "Bangalore"
+        ],
+        "openToRelocation": true,
+        "currentWorkload": "normal"
       }
     },
     {
       "employeeId": "emp-003",
       "name": "Sana Qureshi",
       "resume": {
-        "skills": ["Docker", "Kubernetes", "CI/CD", "Terraform", "Tooling", "Python"],
+        "skills": [
+          "Docker",
+          "Kubernetes",
+          "CI/CD",
+          "Terraform",
+          "Tooling",
+          "Python"
+        ],
         "projects": [
           "Built the multi-region deployment pipeline for 30+ services",
           "Cut mean CI wall-clock time from 41 to 12 minutes"
@@ -52,14 +97,33 @@
           "Ran the build infrastructure for a 400-engineer org"
         ],
         "yearsExperience": 7,
-        "familiarComponents": ["tools", "tests"]
+        "familiarComponents": [
+          "tools",
+          "tests"
+        ]
+      },
+      "staffing": {
+        "primaryRole": "Platform Engineer",
+        "currentComponent": "apache/kafka/tools",
+        "currentLocation": "Bangalore",
+        "preferredLocations": [
+          "Bangalore"
+        ],
+        "openToRelocation": true,
+        "currentWorkload": "light"
       }
     },
     {
       "employeeId": "emp-004",
       "name": "Devang Rao",
       "resume": {
-        "skills": ["Python", "SQL", "Query Engines", "Data Integration", "Java"],
+        "skills": [
+          "Python",
+          "SQL",
+          "Query Engines",
+          "Data Integration",
+          "Java"
+        ],
         "projects": [
           "Implemented a cost-based optimiser rule set for a SQL planner",
           "Wrote six source connectors for a change-data-capture pipeline"
@@ -69,14 +133,32 @@
           "Maintained a connector catalogue used by 40 teams"
         ],
         "yearsExperience": 5,
-        "familiarComponents": ["flink-table", "connect"]
+        "familiarComponents": [
+          "flink-table",
+          "connect"
+        ]
+      },
+      "staffing": {
+        "primaryRole": "Data Engineer",
+        "currentComponent": "apache/flink/flink-table",
+        "currentLocation": "Pune",
+        "preferredLocations": [
+          "Pune"
+        ],
+        "openToRelocation": false,
+        "currentWorkload": "normal"
       }
     },
     {
       "employeeId": "emp-005",
       "name": "Priya Nair",
       "resume": {
-        "skills": ["TypeScript", "React", "Technical Writing", "Accessibility"],
+        "skills": [
+          "TypeScript",
+          "React",
+          "Technical Writing",
+          "Accessibility"
+        ],
         "projects": [
           "Rebuilt a documentation site with versioned API reference",
           "Shipped an accessible component library used across four products"
@@ -86,14 +168,32 @@
           "Owned the public documentation toolchain"
         ],
         "yearsExperience": 3,
-        "familiarComponents": ["docs"]
+        "familiarComponents": [
+          "docs"
+        ]
+      },
+      "staffing": {
+        "primaryRole": "Frontend Engineer",
+        "currentComponent": "apache/kafka/docs",
+        "currentLocation": "Gurgaon",
+        "preferredLocations": [
+          "Gurgaon"
+        ],
+        "openToRelocation": false,
+        "currentWorkload": "heavy"
       }
     },
     {
       "employeeId": "emp-006",
       "name": "Imran Shaikh",
       "resume": {
-        "skills": ["Java", "Test Automation", "JUnit", "CI/CD", "Concurrency"],
+        "skills": [
+          "Java",
+          "Test Automation",
+          "JUnit",
+          "CI/CD",
+          "Concurrency"
+        ],
         "projects": [
           "Built a deterministic harness for flaky distributed integration tests",
           "Cut the flaky-test rate on a 9,000-test suite from 4.1% to 0.3%"
@@ -103,14 +203,34 @@
           "Introduced contract testing across six services"
         ],
         "yearsExperience": 5,
-        "familiarComponents": ["tests", "tools"]
+        "familiarComponents": [
+          "tests",
+          "tools"
+        ]
+      },
+      "staffing": {
+        "primaryRole": "Test Engineer",
+        "currentComponent": "apache/kafka/tests",
+        "currentLocation": "Hyderabad",
+        "preferredLocations": [
+          "Hyderabad",
+          "Bangalore"
+        ],
+        "openToRelocation": true,
+        "currentWorkload": "normal"
       }
     },
     {
       "employeeId": "emp-007",
       "name": "Kavya Iyer",
       "resume": {
-        "skills": ["Java", "Scala", "Stream Processing", "Distributed Systems", "Consensus"],
+        "skills": [
+          "Java",
+          "Scala",
+          "Stream Processing",
+          "Distributed Systems",
+          "Consensus"
+        ],
         "projects": [
           "Implemented a Raft-based metadata quorum replacing ZooKeeper",
           "Designed exactly-once delivery across a multi-cluster topology"
@@ -120,70 +240,152 @@
           "Published on consensus under partial synchrony"
         ],
         "yearsExperience": 8,
-        "familiarComponents": ["streams", "core", "metadata"]
+        "familiarComponents": [
+          "streams",
+          "core",
+          "metadata"
+        ]
+      },
+      "staffing": {
+        "primaryRole": "Backend Engineer",
+        "currentComponent": "apache/kafka/metadata",
+        "currentLocation": "Bangalore",
+        "preferredLocations": [
+          "Bangalore"
+        ],
+        "openToRelocation": true,
+        "currentWorkload": "normal"
       }
     },
     {
       "employeeId": "emp-008",
       "name": "Tarun Bose",
       "resume": {
-        "skills": ["Python", "Docker", "CI/CD", "Observability"],
-        "projects": ["Instrumented a 60-service estate with distributed tracing"],
-        "experience": ["6 years site reliability engineering"],
+        "skills": [
+          "Python",
+          "Docker",
+          "CI/CD",
+          "Observability"
+        ],
+        "projects": [
+          "Instrumented a 60-service estate with distributed tracing"
+        ],
+        "experience": [
+          "6 years site reliability engineering"
+        ],
         "yearsExperience": 6,
-        "familiarComponents": ["tools"]
+        "familiarComponents": [
+          "tools"
+        ]
+      },
+      "staffing": {
+        "primaryRole": "Platform Engineer",
+        "currentComponent": "apache/kafka/tools",
+        "currentLocation": "Chennai",
+        "preferredLocations": [
+          "Chennai",
+          "Bangalore"
+        ],
+        "openToRelocation": true,
+        "currentWorkload": "light"
       }
     }
   ],
-
   "preferences": [
     {
       "employeeId": "emp-001",
       "preferredShift": "evening",
-      "workAreas": ["backend"],
-      "availability": ["mon", "tue", "wed", "thu"],
+      "workAreas": [
+        "backend"
+      ],
+      "availability": [
+        "mon",
+        "tue",
+        "wed",
+        "thu"
+      ],
       "workStyle": "individual",
       "openToOtherTeams": true
     },
     {
       "employeeId": "emp-002",
       "preferredShift": "morning",
-      "workAreas": ["backend"],
-      "availability": ["mon", "tue", "wed", "thu", "fri"],
+      "workAreas": [
+        "backend"
+      ],
+      "availability": [
+        "mon",
+        "tue",
+        "wed",
+        "thu",
+        "fri"
+      ],
       "workStyle": "collaborative",
       "openToOtherTeams": true
     },
     {
       "employeeId": "emp-003",
       "preferredShift": "flexible",
-      "workAreas": ["devops", "testing"],
-      "availability": ["mon", "tue", "wed", "thu", "fri"],
+      "workAreas": [
+        "devops",
+        "testing"
+      ],
+      "availability": [
+        "mon",
+        "tue",
+        "wed",
+        "thu",
+        "fri"
+      ],
       "workStyle": "mixed",
       "openToOtherTeams": true
     },
     {
       "employeeId": "emp-004",
       "preferredShift": "afternoon",
-      "workAreas": ["data", "backend"],
-      "availability": ["tue", "wed", "thu", "fri"],
+      "workAreas": [
+        "data",
+        "backend"
+      ],
+      "availability": [
+        "tue",
+        "wed",
+        "thu",
+        "fri"
+      ],
       "workStyle": "mixed",
       "openToOtherTeams": true
     },
     {
       "employeeId": "emp-005",
       "preferredShift": "morning",
-      "workAreas": ["frontend"],
-      "availability": ["mon", "tue", "wed"],
+      "workAreas": [
+        "frontend"
+      ],
+      "availability": [
+        "mon",
+        "tue",
+        "wed"
+      ],
       "workStyle": "collaborative",
       "openToOtherTeams": false
     },
     {
       "employeeId": "emp-006",
       "preferredShift": "evening",
-      "workAreas": ["testing", "backend"],
-      "availability": ["mon", "tue", "wed", "thu"],
+      "workAreas": [
+        "testing",
+        "backend"
+      ],
+      "availability": [
+        "mon",
+        "tue",
+        "wed",
+        "thu"
+      ],
       "workStyle": "mixed",
       "openToOtherTeams": true
     }
-  ]
+  ],
+  "_staffing": "DECLARED STAFFING FACTS, and the same modelled basis as everything else in this file. Where somebody works, whether they would move and how loaded they say they are cannot be read off the event log without joining a name to an actor_hash, so they are recorded here as things the employee stated. NONE of them is scored: matching.py never reads this block. currentWorkload in particular is self-reported load, not observed throughput."
 }

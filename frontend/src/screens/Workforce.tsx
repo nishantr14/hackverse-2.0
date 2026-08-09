@@ -1,6 +1,6 @@
 import { AnimatePresence, motion } from 'framer-motion';
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Calculating } from '../components/Calculating';
+import { Calculating, RECOMMENDATION_STEPS } from '../components/Calculating';
 import { CandidateCard } from '../components/CandidateCard';
 import { CandidateCompare } from '../components/CandidateCompare';
 import { ErrorPanel, LoadingPanel } from '../components/Feedback';
@@ -10,20 +10,16 @@ import { ScenarioAssumptions } from '../components/ScenarioAssumptions';
 import { ScreenHeader } from '../components/ScreenHeader';
 import { Segmented } from '../components/Segmented';
 import {
-  getCandidates,
   getComponentDetail,
   getOpenings,
+  getRecommendations,
   getSpendSummary,
   simulateReallocation,
+  type CandidateSet,
   type ComponentDetail,
   type SpendSummary,
 } from '../data/api';
-import type {
-  Candidate,
-  Opening,
-  RelocationAssumptions,
-  SimulatorOutput,
-} from '../data/types';
+import type { Opening, RelocationAssumptions, SimulatorOutput } from '../data/types';
 import { EASE_GLASS, stagger } from '../lib/motion';
 import {
   DEFAULT_ASSUMPTIONS,
@@ -64,7 +60,7 @@ import { SHIFT_LABEL, WEEKDAY_LABEL } from '../lib/workforce';
 type RecState =
   | { phase: 'idle' }
   | { phase: 'running' }
-  | { phase: 'ready'; candidates: Candidate[] }
+  | { phase: 'ready'; set: CandidateSet }
   | { phase: 'failed'; message: string };
 
 type SimState =
@@ -101,7 +97,9 @@ export function Workforce() {
       ? (openings.data.find((o) => o.openingId === openingId) ?? null)
       : null;
 
-  const candidates = rec.phase === 'ready' ? rec.candidates : [];
+  const candidates = rec.phase === 'ready' ? rec.set.candidates : [];
+  /** The requirement the engine derived, once it has answered. */
+  const derived = rec.phase === 'ready' ? rec.set.requirement : null;
   const selected = candidates.find((c) => c.candidateId === selectedId) ?? null;
   const compared = candidates.filter((c) => comparedIds.includes(c.candidateId));
 
@@ -125,21 +123,23 @@ export function Workforce() {
   }
 
   const onRecommend = useCallback(async () => {
-    if (!openingId) return;
+    if (!opening) return;
     setRec({ phase: 'running' });
     setSelectedId(null);
     setComparedIds([]);
     setSim({ phase: 'idle' });
     const started = Date.now();
     try {
-      const list = await getCandidates(openingId);
+      // The opening IS the scenario: its component, headcount, shift and days
+      // are what the engine ranks against. No second requirement path.
+      const set = await getRecommendations(opening);
       const wait = Math.max(0, MIN_RUN_MS - (Date.now() - started));
       if (wait) await new Promise((r) => setTimeout(r, wait));
-      setRec({ phase: 'ready', candidates: list });
+      setRec({ phase: 'ready', set });
     } catch (err) {
       setRec({ phase: 'failed', message: err instanceof Error ? err.message : String(err) });
     }
-  }, [openingId]);
+  }, [opening]);
 
   const onSimulate = useCallback(async () => {
     if (!selected || !opening) return;
@@ -221,11 +221,13 @@ export function Workforce() {
                 <span className="font-semibold text-[var(--text-primary)]">
                   This screen is separate from the analytics.
                 </span>{' '}
-                Candidates, resumes and preferences were volunteered. They are never joined to the
-                event log, which stays pseudonymised and carries no per-person figure — so no
-                candidate on this page has a cost, an output measure or a productivity score
-                anywhere in this product. The reallocation below is priced by the live simulator,
-                which is asked about components, never about people.
+                Candidates are ranked on a preference form and a resume — the volunteered layer,
+                never joined to the event log, which stays pseudonymised and carries no per-person
+                figure. No candidate on this page has a cost, an output measure or a productivity
+                score anywhere in this product, and nobody is ranked against a colleague on
+                anything observed. Only an employee with a submitted preference record can be
+                named at all. The reallocation below is priced by the live simulator, which is
+                asked about components, never about people.
               </p>
             </div>
 
@@ -266,8 +268,20 @@ export function Workforce() {
                       <dt className="text-[11px] tracking-[0.08em] text-[var(--text-secondary)] uppercase">
                         Required skills
                       </dt>
+                      {/* Once the engine has answered, show the requirement it
+                          actually ranked against. The opening publishes its own
+                          list and the engine derives one from the component; two
+                          different "required skills" on one screen is a screen
+                          that cannot be trusted about which one was used. */}
                       <dd className="mt-1.5 text-[12.5px] text-[var(--text-primary)]">
-                        {opening.requiredSkills.join(', ')}
+                        {derived ? derived.requiredSkills.join(', ') : opening.requiredSkills.join(', ')}
+                        {derived && (
+                          <span className="mt-1 block text-[11px] text-[var(--text-muted)]">
+                            {derived.thin
+                              ? 'The component carries no skill signal — treat this list as weak.'
+                              : derived.basis}
+                          </span>
+                        )}
                       </dd>
                     </div>
                     <div>
@@ -331,7 +345,9 @@ export function Workforce() {
                   style={{ overflow: 'hidden' }}
                 >
                   <GlassCard className="p-6" animate={false}>
-                    <Calculating />
+                    {/* Not the forecast's steps: this call reads no event log,
+                        and saying it did would contradict the panel above. */}
+                    <Calculating steps={RECOMMENDATION_STEPS} />
                   </GlassCard>
                 </motion.div>
               )}
@@ -349,6 +365,39 @@ export function Workforce() {
                     </h2>
                     <p className="text-[11.5px] text-[var(--text-muted)]">
                       Open “Why?” for the reasoning. Tick two or more to compare them.
+                    </p>
+                  </div>
+
+                  {/* THE SYNTHETIC LABEL, and the consent gate made countable.
+                      Both come from the response rather than being written
+                      here, so a screen cannot keep claiming a basis after the
+                      backend's has changed. */}
+                  <div
+                    className="rounded-xl border px-4 py-3"
+                    style={{
+                      borderColor: 'rgb(245 166 35 / 0.35)',
+                      background: 'rgb(245 166 35 / 0.06)',
+                    }}
+                  >
+                    <p className="text-[12px] leading-relaxed text-[var(--text-secondary)]">
+                      <span className="font-semibold" style={{ color: 'var(--amber)' }}>
+                        {rec.set.dataBasis.label}.
+                      </span>{' '}
+                      {rec.set.dataBasis.note}
+                    </p>
+                    <p className="mt-2 text-[11.5px] leading-relaxed text-[var(--text-muted)]">
+                      {rec.set.anonymousCapacity.count} further{' '}
+                      {rec.set.anonymousCapacity.count === 1 ? 'profile' : 'profiles'} could not be
+                      named here. {rec.set.anonymousCapacity.note}
+                      {rec.set.excluded.length > 0 && (
+                        <>
+                          {' '}
+                          {rec.set.excluded.length}{' '}
+                          {rec.set.excluded.length === 1 ? 'person was' : 'people were'} excluded on
+                          a stated boundary rather than down-ranked:{' '}
+                          {rec.set.excluded.map((e) => `${e.name} — ${e.reason}`).join(' ')}
+                        </>
+                      )}
                     </p>
                   </div>
 
@@ -462,10 +511,14 @@ export function Workforce() {
             )}
 
             <p className="text-[12px] leading-relaxed text-[var(--text-secondary)]">
-              Candidate data is volunteered and fixture-backed until the resume and recommender
-              services exist. Delivery impact, component headcount and the blended labour rate are
-              computed from the event log. Relocation, accommodation, travel and additional ramp-up
-              are scenario assumptions typed in above, and are labelled as such wherever they appear.
+              Candidates are ranked by the live recommendation service over a preference form and a
+              resume. Those profiles are modelled rather than submitted — our contributors are
+              pseudonymised Apache accounts who filled in no form — and the response says so on
+              every request. The ranking itself is a weighted sum whose terms are shown under
+              “Why?” and add up to the figure beside the name. Delivery impact, component headcount
+              and the blended labour rate are computed from the event log. Relocation,
+              accommodation, travel and additional ramp-up are scenario assumptions typed in above,
+              and are labelled as such wherever they appear.
             </p>
           </motion.div>
         )}

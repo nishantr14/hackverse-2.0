@@ -77,7 +77,12 @@ const ANALYTICS_NOTE = {
 };
 
 const WORKFORCE_NOTE = {
-  data: 'Volunteered by the employee — preferences and resume.',
+  // The CONSENT BASIS is volunteered — nobody is named without a submitted
+  // preference record. The DATA itself is modelled, because our contributors
+  // are pseudonymised Apache accounts who submitted nothing. Both halves have
+  // to be on screen; stating only the first would read as a claim that these
+  // are real submissions.
+  data: 'Preferences and resume — volunteered basis, modelled data.',
   privacy: 'Never joined to the event log. Recommendations only; nobody is assigned.',
 };
 
