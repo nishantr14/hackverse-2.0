@@ -1,0 +1,148 @@
+name: CI
+
+# Runs on every push (so pushing a feature branch gets a signal before you
+# open a PR) and on every PR into main. main's build broke once already
+# because a merge landed without anyone running `npm run build` first — this
+# exists so that can't happen silently again.
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend (schema + migrations + pytest + ruff)
+    runs-on: ubuntu-latest
+
+    # A real Postgres, not mocked — most of this repo's discipline (fail-
+    # closed cost citations, k-anonymity views, the read-only esi_app role)
+    # only means anything checked against a real database.
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: esi
+          POSTGRES_PASSWORD: esi
+          POSTGRES_DB: esi
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U esi -d esi"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgresql+psycopg://esi:esi@localhost:5432/esi
+      DATABASE_URL_READONLY: postgresql+psycopg://esi_app:esi_app@localhost:5432/esi
+      PYTHONPATH: .
+
+    defaults:
+      run:
+        working-directory: backend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: backend/pyproject.toml
+
+      - name: Install backend
+        run: pip install -e ".[dev]"
+
+      - name: Apply the frozen schema (docs/schema.sql)
+        run: PGPASSWORD=esi psql -h localhost -U esi -d esi -f ../docs/schema.sql
+
+      - name: Apply migrations (backend/migrations/*.sql)
+        # Everything past the frozen schema — the canonical event log, the
+        # append-only triggers, every process/waste/spend/simulate view —
+        # lives here. Skipping this is the #1 cause of routes 500ing against
+        # views that were never created (see SETUP-FROM-DUMP.md).
+        run: python -m app.db.migrate
+
+      - name: Lint (ruff)
+        run: ruff check app/
+
+      - name: Test (pytest)
+        # Runs against a freshly-migrated but EMPTY database — fast and
+        # deterministic, no external API calls, no 20MB dump to fetch. Most
+        # of the suite is written for exactly this (conftest.py's pg_engine
+        # fixture skips rather than fails with no Postgres; several fixes
+        # this session were specifically about handling empty data
+        # gracefully). The deselected tests below are real integration tests
+        # that assert on the actual shape of ingested Apache Kafka/Flink
+        # history — they need either a full ingestion run or Nishant's
+        # dump restored (see SETUP-FROM-DUMP.md) and are meant to be run
+        # locally against that, not on every push. Verified locally against
+        # a clean schema-only database before this list was written: 656
+        # passed, 15 skipped, these 18 failed for lack of data — none of
+        # them are logic bugs.
+        run: |
+          pytest -q \
+            --deselect tests/test_api_integration.py::test_every_cost_event_has_a_known_basis \
+            --deselect tests/test_api_integration.py::test_simulator_refuses_a_move_to_the_same_component \
+            --deselect tests/test_api_integration.py::test_simulator_refuses_moving_more_engineers_than_exist \
+            --deselect tests/test_api_integration.py::test_simulator_is_deterministic \
+            --deselect tests/test_api_integration.py::test_moving_people_off_a_component_slips_it_and_helps_the_other \
+            --deselect tests/test_api_integration.py::test_ramp_up_means_the_destination_gains_less_than_it_was_given \
+            --deselect tests/test_api_integration.py::test_a_bigger_move_never_helps_the_destination_less \
+            --deselect tests/test_api_integration.py::test_spend_rows_match_the_frontend_contract \
+            --deselect tests/test_api_integration.py::test_review_latency_rows_are_medians_not_sums \
+            --deselect tests/test_api_integration.py::test_spend_summary_carries_a_citation \
+            --deselect tests/test_api_integration.py::test_process_map_shares_sum_to_one \
+            --deselect tests/test_api_integration.py::test_review_latency_is_reported_but_never_priced \
+            --deselect tests/test_api_integration.py::test_simulate_endpoint_answers_and_refuses_in_the_right_shapes \
+            --deselect tests/test_api_integration.py::test_simulate_components_only_offers_forecastable_ones \
+            --deselect tests/test_github_connector.py::test_run_joins_to_a_work_item_when_the_sha_is_known \
+            --deselect tests/test_process_and_waste.py::test_review_latency_reports_two_definitions_with_different_denominators \
+            --deselect tests/test_raw_payload_immutable.py::test_real_ingested_rows_are_untouched_by_all_of_the_above \
+            --deselect tests/test_session_inference.py::test_events_sql_excludes_ci_run
+
+  frontend:
+    name: Frontend (typecheck + build + lint)
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend
+        run: npm ci
+
+      - name: Typecheck
+        run: npx tsc -b --noEmit
+
+      - name: Build
+        # This is the exact check that would have caught main's broken
+        # build: a merge re-added four dead fixture imports, and
+        # tsconfig.app.json's noUnusedLocals turned that into a build
+        # failure nobody saw until someone ran this by hand.
+        run: npm run build
+
+      - name: Lint (oxlint)
+        run: npm run lint
+
+  compose-config:
+    name: docker-compose config validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate infra/docker-compose.yml
+        run: docker compose -f infra/docker-compose.yml config -q
