@@ -128,8 +128,14 @@ def test_allowed_origins_list_splits_csv():
     ]
 
 
-def test_all_four_routers_are_known_even_before_they_exist():
-    assert set(ROUTER_MODULES) == {"spend", "waste", "process", "simulate"}
+def test_every_router_is_known_even_before_it_exists():
+    assert set(ROUTER_MODULES) == {
+        "spend",
+        "waste",
+        "process",
+        "simulate",
+        "workforce",
+    }
 
 
 # --- static privacy check ------------------------------------------------
@@ -166,7 +172,13 @@ def test_identity_store_is_only_opened_from_the_ingestion_package():
     constructing the store and joining a login back onto an actor_hash.
     """
     app_dir = REPO_ROOT / "backend" / "app"
-    exempt = {app_dir / "config.py"}
+    # workforce/store.py opens a DIFFERENT SQLite file — data/workforce.db,
+    # holding volunteered names and preferences. `sqlite3.connect` was only
+    # ever a proxy for "opens the identity store", and it stopped being a
+    # precise one the moment a second SQLite file existed. The exemption is
+    # narrow and the file is held to a stricter rule by the test below: it may
+    # not name the identity database or actor_hash at all.
+    exempt = {app_dir / "config.py", app_dir / "workforce" / "store.py"}
     opens_the_store = re.compile(r"IdentityStore\(|identity_store\(|sqlite3\.connect")
     offenders = [
         str(path.relative_to(REPO_ROOT))
@@ -176,3 +188,41 @@ def test_identity_store_is_only_opened_from_the_ingestion_package():
         and opens_the_store.search(path.read_text(encoding="utf-8"))
     ]
     assert not offenders, f"identity store opened outside ingestion/: {offenders}"
+
+
+def test_the_workforce_store_cannot_reach_the_identity_database():
+    """The exemption above is only safe if this holds.
+
+    The workforce store is the one file outside ingestion/ allowed to open a
+    SQLite database, so it carries the burden of proving it opens the right
+    one: it may not reference the identity DB path, the salt, or actor_hash.
+    Joining a volunteered name onto a pseudonymised actor is the single thing
+    this whole layer exists not to do.
+
+    Checked against the EXECUTABLE code, with docstrings and comments
+    stripped: that module explains at length which database it is not, and a
+    grep over raw text would fail on the explanation while a real reference
+    buried in a function body would read the same as prose.
+    """
+    import ast
+
+    tree = ast.parse(
+        (REPO_ROOT / "backend" / "app" / "workforce" / "store.py").read_text(
+            encoding="utf-8"
+        )
+    )
+    for node in ast.walk(tree):
+        if isinstance(
+            node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
+        ) and ast.get_docstring(node):
+            node.body = node.body[1:]
+    source = ast.unparse(tree)
+    for token in (
+        "identity_db",
+        "identity.db",
+        "IdentityStore",
+        "actor_hash",
+        "pseudonymization_salt",
+        "PSEUDONYMIZATION_SALT",
+    ):
+        assert token not in source, f"workforce store references {token!r}"
