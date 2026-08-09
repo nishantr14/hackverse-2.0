@@ -76,6 +76,9 @@ class Settings(BaseSettings):
     # --- Frontend (read by Vite, mirrored here so the key is documented) ---
     vite_api_base_url: str = "http://localhost:8000"
 
+    # --- CORS: origins the frontend may call the API from ---
+    allowed_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
+
     @field_validator("github_repos", "asf_jira_projects")
     @classmethod
     def _reject_empty_csv(cls, v: str) -> str:
@@ -92,6 +95,11 @@ class Settings(BaseSettings):
     def jira_project_list(self) -> list[str]:
         """`ASF_JIRA_PROJECTS` as a list."""
         return _split_csv(self.asf_jira_projects)
+
+    @property
+    def allowed_origins_list(self) -> list[str]:
+        """`ALLOWED_ORIGINS` as a list, for CORSMiddleware."""
+        return _split_csv(self.allowed_origins)
 
     @property
     def identity_db_file(self) -> Path:
