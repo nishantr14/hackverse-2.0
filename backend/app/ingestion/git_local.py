@@ -327,8 +327,14 @@ def _parse_header(line: str) -> Commit:
     )
     return Commit(
         sha=sha,
-        authored_at=datetime.fromisoformat(authored),
-        committed_at=datetime.fromisoformat(committed),
+        # %aI/%cI preserve the AUTHOR'S original tz offset (e.g. +05:30), not
+        # UTC. GraphQL's authoredDate is always UTC, so two representations
+        # of the same instant hashed different strings in event_id_for and
+        # ~1.7% of commits landed twice under two ids. Normalize here, once,
+        # rather than at every call site — the working agreement is "all
+        # timestamps UTC," and this is the one place that wasn't.
+        authored_at=datetime.fromisoformat(authored).astimezone(UTC),
+        committed_at=datetime.fromisoformat(committed).astimezone(UTC),
         identity_key=identity_key_from_email(email, name),
         subject=subject,
         parents=parents.split() if parents.strip() else [],
