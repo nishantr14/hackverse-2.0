@@ -79,6 +79,27 @@ export const IconDownload = ({ className }: P) => (
   </svg>
 );
 
+export const IconWorkforce = ({ className }: P) => (
+  <svg {...base} className={className}>
+    <circle cx="6" cy="5.2" r="2.4" />
+    <path d="M1.9 14.2c0-2.3 1.8-4 4.1-4s4.1 1.7 4.1 4" />
+    <path d="M11 3.2a2.4 2.4 0 0 1 0 4.5" />
+    <path d="M12.4 10.6c1.1.6 1.8 1.9 1.8 3.6" />
+  </svg>
+);
+
+export const IconCheck = ({ className }: P) => (
+  <svg {...base} className={className}>
+    <path d="M3 8.4 6.4 11.8 13 5.2" />
+  </svg>
+);
+
+export const IconChevron = ({ className }: P) => (
+  <svg {...base} className={className}>
+    <path d="M4.4 6.2 8 9.8l3.6-3.6" />
+  </svg>
+);
+
 export const IconDatabase = ({ className }: P) => (
   <svg {...base} className={className}>
     <ellipse cx="8" cy="3.6" rx="5" ry="1.9" />
