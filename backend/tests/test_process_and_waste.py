@@ -13,9 +13,16 @@ import dataclasses
 import pytest
 from sqlalchemy import text
 
-from app.waste import backlog, ci_waste, discovery, key_person, review_latency, rework, variants
+from app.waste import (
+    backlog,
+    ci_waste,
+    discovery,
+    key_person,
+    review_latency,
+    rework,
+    variants,
+)
 from app.waste.common import WasteFinding
-
 
 # --- pure logic: no DB needed -------------------------------------------
 
@@ -176,8 +183,9 @@ def test_exactly_one_modal_variant_per_repo(pg_engine):
 
 
 def test_load_edges_significance_filter_covers_at_most_the_threshold(pg_engine):
-    from app.db.session import get_read_engine
     from sqlalchemy.orm import Session as OrmSession
+
+    from app.db.session import get_read_engine
 
     with OrmSession(get_read_engine()) as session:
         edges = discovery.load_edges(session, repo="apache/kafka")
@@ -194,8 +202,9 @@ def test_load_edges_significance_filter_covers_at_most_the_threshold(pg_engine):
 
 
 def test_load_variants_is_sorted_by_cost_share_descending(pg_engine):
-    from app.db.session import get_read_engine
     from sqlalchemy.orm import Session as OrmSession
+
+    from app.db.session import get_read_engine
 
     with OrmSession(get_read_engine()) as session:
         vs = variants.load_variants(session)
@@ -204,8 +213,9 @@ def test_load_variants_is_sorted_by_cost_share_descending(pg_engine):
 
 
 def test_review_latency_reports_two_definitions_with_different_denominators(pg_engine):
-    from app.db.session import get_read_engine
     from sqlalchemy.orm import Session as OrmSession
+
+    from app.db.session import get_read_engine
 
     with OrmSession(get_read_engine()) as session:
         findings = review_latency.detect(session)
@@ -217,8 +227,9 @@ def test_review_latency_reports_two_definitions_with_different_denominators(pg_e
 
 
 def test_backlog_segments_are_all_positive_hours(pg_engine):
-    from app.db.session import get_read_engine
     from sqlalchemy.orm import Session as OrmSession
+
+    from app.db.session import get_read_engine
 
     with OrmSession(get_read_engine()) as session:
         _finding, segments = backlog.detect(session)
@@ -244,8 +255,9 @@ def test_key_person_suppresses_components_under_the_k_floor(pg_engine):
 
 
 def test_rework_hours_are_real_even_though_cost_is_pending(pg_engine):
-    from app.db.session import get_read_engine
     from sqlalchemy.orm import Session as OrmSession
+
+    from app.db.session import get_read_engine
 
     with OrmSession(get_read_engine()) as session:
         finding = rework.detect(session)
@@ -275,8 +287,9 @@ def test_the_app_role_still_cannot_read_actor_or_the_internal_activity_view(pg_e
     """The privilege boundary the routers rely on, proved rather than
     assumed — if this ever starts passing, the routers may be silently
     exposing per-actor data."""
-    from app.db.session import get_read_engine
     from sqlalchemy.exc import ProgrammingError
+
+    from app.db.session import get_read_engine
 
     with get_read_engine().connect() as conn:
         for relation in ("actor", "v_actor_component_activity"):

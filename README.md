@@ -177,6 +177,40 @@ Unattributable CI runs keep a NULL `work_item_id` in `ci_run` and are counted
 in the report. They cannot appear in `event_log`, whose `work_item_id` is NOT
 NULL.
 
+## Full pipeline, in order
+
+Everything below runs against `raw_payload` and touches no network, so any
+step can be re-run freely. Every one is idempotent — re-running upserts in
+place rather than doubling.
+
+```bash
+python -m app.db.migrate              # 1. views + triggers  (REQUIRED FIRST)
+python -m app.normalise.event_log     # 2. raw_payload -> event_log
+python -m app.cost.rate_card --seed   # 3. public cited rates -> rate_card
+python -m app.cost.band_inference     # 4. inferred bands -> actor.role_band
+python -m app.cost.session_inference  # 5. clustered timestamps -> work_session
+python -m app.synthetic.gen_tokens    # 6. modelled AI usage -> ai_usage
+python -m app.synthetic.gen_calendar  # 7. modelled meetings -> calendar_event
+python -m app.cost.cost_attribution   # 8. everything above -> cost_event
+```
+
+**Step 1 is not optional and is easy to miss.** Docker's initdb loads
+`docs/schema.sql` and nothing else, so every view added after the freeze —
+the canonical event log, the append-only triggers, and all the
+process/waste/spend/simulate views — exists only in `backend/migrations/`.
+Skip it and you get a database that looks completely healthy while seven API
+routes return 500 against views that were never created. `deploy.sh` runs it
+for you.
+
+Steps 3 and 6 refuse to run if their citation in `config/rates.yaml` or
+`config/ai_rates.yaml` is blank. That is deliberate: the source string is
+rendered on screen next to the money, and an uncited figure is an invented
+one. Fill the citation in rather than working around the refusal.
+
+Order matters in two places: bands (4) must exist before sessions are priced
+(8), and the synthetic overlays (6, 7) must exist before attribution (8) or
+their cost rows are simply absent from the total.
+
 ## Running the app
 
 **Docker:** `docker compose -f infra/docker-compose.yml up` runs both.

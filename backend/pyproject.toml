@@ -40,6 +40,14 @@ target-version = "py311"
 [tool.ruff.lint.isort]
 known-first-party = ["app"]
 
+[tool.ruff.lint.per-file-ignores]
+# B008 forbids a function call in a default argument. FastAPI's dependency
+# injection IS that call — `session: Session = Depends(get_read_session)` is
+# the documented idiom and there is no alternative spelling that keeps the
+# type annotation. Scoped to the routers so the rule keeps protecting
+# everywhere else.
+"app/api/*.py" = ["B008"]
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"

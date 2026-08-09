@@ -72,7 +72,7 @@ def load_edges(session: Session, repo: str | None = None) -> list[Edge]:
         return []
 
     cost_available = any(float(r[6]) > 0 for r in rows)
-    weight = lambda r: _rank_weight(r, cost_available)  # noqa: E731
+    weight = lambda r: _rank_weight(r, cost_available)
     ordered = sorted(rows, key=weight, reverse=True)
     total = sum(weight(r) for r in ordered) or 1.0
 

@@ -1,5 +1,5 @@
 import { motion } from 'framer-motion';
-import { formatPercent } from '../lib/format';
+import { formatHours, formatPercent } from '../lib/format';
 import { EASE_GLASS } from '../lib/motion';
 import { colorFor, type ProjectPalette } from '../lib/projectColors';
 import type { ProjectSpend } from '../lib/spend';
@@ -87,7 +87,7 @@ export function HoursSplit({ projects, palette, focusProject, onFocusProject }: 
                   </span>
                 </span>
                 <span className="tnum shrink-0 text-[12px] text-[var(--text-secondary)]">
-                  {total} h ·{' '}
+                  {formatHours(total)} ·{' '}
                   <span className="text-[var(--text-primary)]">{formatPercent(reviewShare, 0)}</span>{' '}
                   review
                 </span>
@@ -106,7 +106,7 @@ export function HoursSplit({ projects, palette, focusProject, onFocusProject }: 
                     style={{ width: `${authorShare * 100}%`, background: c.base, marginRight: 2 }}
                   >
                     <span className="tnum truncate px-2 text-[11px] font-semibold text-[#0B0E14]">
-                      {p.authorHours} h
+                      {formatHours(p.authorHours)}
                     </span>
                   </span>
                   <span

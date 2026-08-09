@@ -12,6 +12,7 @@ route here computes anything; it only shapes what those modules return.
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.db.session import get_read_session
@@ -47,6 +48,61 @@ def get_graph(repo: str | None = None, session: Session = Depends(get_read_sessi
         if ranked_by_cost
         else "No session-inferred or CI cost has landed yet — ranked by "
         "frequency until config/rates.yaml's rate_card is seeded.",
+    }
+
+
+MAP_EDGES_SQL = """
+SELECT source_activity, target_activity, variant_class,
+       SUM(n_transitions) AS frequency, SUM(cost_rupees) AS cost_rupees
+FROM v_edges_by_variant
+-- Cast: Postgres cannot infer a bare NULL parameter's type.
+WHERE (CAST(:repo AS TEXT) IS NULL OR repo = CAST(:repo AS TEXT))
+GROUP BY 1, 2, 3
+ORDER BY 5 DESC
+"""
+
+MAP_SUMMARY_SQL = """
+SELECT variant_class, share_of_work_items, share_of_cost, n_cases, total_cost
+FROM v_variant_class_summary
+ORDER BY share_of_cost DESC
+"""
+
+
+@router.get("/map")
+def get_map(repo: str | None = None, session: Session = Depends(get_read_session)):
+    """The graph collapsed into the three semantic variant classes.
+
+    This is the drawable form. /graph and /variants stay as they are — the
+    true per-sequence variants are the honest process-mining answer, and
+    there are thousands of them, which is exactly why they cannot be a
+    picture. See migrations/006 for how a case is classified.
+    """
+    edges = session.execute(text(MAP_EDGES_SQL), {"repo": repo}).all()
+    summary = session.execute(text(MAP_SUMMARY_SQL)).all()
+
+    nodes = sorted({e[0] for e in edges} | {e[1] for e in edges})
+    return {
+        "nodes": [{"id": n, "label": n.replace("_", " ").title()} for n in nodes],
+        "edges": [
+            {
+                "from": e[0],
+                "to": e[1],
+                "variant": e[2],
+                "frequency": int(e[3]),
+                "costRupees": float(e[4] or 0),
+            }
+            for e in edges
+        ],
+        "variantSummary": [
+            {
+                "variant": s[0],
+                "shareOfWorkItems": float(s[1] or 0),
+                "shareOfCost": float(s[2] or 0),
+                "nCases": int(s[3]),
+                "totalCost": float(s[4] or 0),
+            }
+            for s in summary
+        ],
     }
 
 

@@ -6,7 +6,7 @@ clustering logic itself, only for the two queries at the bottom.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import text
@@ -22,7 +22,7 @@ from app.cost.session_inference import (
 
 ACTOR_A = "a" * 16
 ACTOR_B = "b" * 16
-T0 = datetime(2026, 1, 5, 9, 0, tzinfo=timezone.utc)
+T0 = datetime(2026, 1, 5, 9, 0, tzinfo=UTC)
 
 
 def ev(actor=ACTOR_A, item="w1", event="e1", minutes_after_t0=0) -> RawEvent:

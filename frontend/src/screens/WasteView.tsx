@@ -97,9 +97,12 @@ export function WasteView() {
           quarter bought nothing that still exists.
         </>
       ),
-      sub: `A further ${formatMoney(
-        exposure,
-      )} of in-flight work sits behind single owners — exposed, not yet lost. Pick a category to open its ledger.`,
+      sub:
+        exposure > 0
+          ? `A further ${formatMoney(
+              exposure,
+            )} of in-flight work sits behind single owners — exposed, not yet lost. Pick a category to open its ledger.`
+          : 'Key-person exposure is computed offline and never served over the API — it reads a per-actor view on purpose. Pick a category to open its ledger.',
     };
   }
 
@@ -109,7 +112,7 @@ export function WasteView() {
         step="03"
         eyebrow="Waste and risk"
         title="What the money bought that lasted"
-        lede="Four priced failure modes, each traced back to the rows in the event log that produced it."
+        lede="Five failure modes, each traced back to the rows in the event log that produced it. Three carry a price; review latency is reported as time, and key-person exposure never leaves the machine."
         headline={
           headline
             ? (compact) => (
@@ -139,27 +142,41 @@ export function WasteView() {
                 value: (
                   <AnimatedNumber value={recoverable} format={moneyScaleFormatter(recoverable)} />
                 ),
-                detail: `Rework, review latency and meeting cost · ${
-                  categories.filter((c) => c.recoverable).reduce((s, c) => s + c.rows.length, 0)
-                } priced lines across ${projectWaste.length} projects`,
+                detail: `Meetings, CI reruns and rework · ${categories
+                  .filter((c) => c.recoverable && c.priced)
+                  .reduce((s, c) => s + c.rows.length, 0)} priced lines across ${
+                  projectWaste.length
+                } projects`,
                 formula: (
                   <>
-                    Rework + review latency + meeting cost. Key-person exposure is deliberately{' '}
-                    <strong>not</strong> added here — it is value at risk, not money already spent,
-                    and summing the two would produce a figure that means nothing.
+                    Meeting cost + CI rerun waste + rework. Review latency is{' '}
+                    <strong>not</strong> in this total — waiting is wall clock, and nobody is
+                    billed to wait, so it is reported as time instead. Key-person exposure is
+                    excluded too: it is value at risk, not money already spent, and summing the
+                    two would produce a figure that means nothing.
                   </>
                 ),
               }}
               metrics={[
                 {
                   label: 'Key-person exposure',
-                  value: <AnimatedNumber value={exposure} format={moneyScaleFormatter(exposure)} />,
-                  detail: 'In-flight value behind single owners — at risk, not spent',
+                  value:
+                    exposure > 0 ? (
+                      <AnimatedNumber value={exposure} format={moneyScaleFormatter(exposure)} />
+                    ) : (
+                      <span className="text-[19px]">Not served</span>
+                    ),
+                  detail:
+                    exposure > 0
+                      ? 'In-flight value behind single owners — at risk, not spent'
+                      : 'Computed offline only — the API role cannot read it',
                   formula: (
                     <>
                       Value of open work in components where one author owns most recent changes.
-                      Ownership is measured from commit counts on pseudonymised identifiers; no
-                      individual is named anywhere in this product.
+                      It is per-actor by construction, so the view it needs is deliberately never
+                      granted to the API role and this figure cannot be served over HTTP at any
+                      aggregation. Run <code>python -m app.waste.key_person</code> to see it. That
+                      refusal is the privacy design working, not a gap.
                     </>
                   ),
                 },

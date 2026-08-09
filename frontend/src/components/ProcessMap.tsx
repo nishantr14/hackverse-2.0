@@ -2,7 +2,15 @@ import { motion } from 'framer-motion';
 import type { ProcessEdge, ProcessGraph } from '../data/types';
 import { formatMoney } from '../lib/format';
 import { EASE_GLASS, snap } from '../lib/motion';
-import { CANVAS, NODE, NODE_POS, drawEdges, variantTone, VARIANT_LABEL } from '../lib/process';
+import {
+  CANVAS,
+  NODE,
+  NODE_POS,
+  drawEdges,
+  posFor,
+  variantTone,
+  VARIANT_LABEL,
+} from '../lib/process';
 
 /**
  * The process map.
@@ -172,8 +180,10 @@ export function ProcessMap({ graph, variant, activeEdge, onActiveEdge }: Process
         })}
 
         {graph.nodes.map((node, i) => {
-          const p = NODE_POS[node.id];
-          if (!p) return null;
+          // posFor, not NODE_POS[...]: an unplaced activity gets a stable
+          // parking spot instead of silently disappearing from a map whose
+          // whole job is to show everything the process actually does.
+          const p = posFor(node.id);
           const touched =
             activeEdge !== null && (activeEdge.from === node.id || activeEdge.to === node.id);
           const isDetour = node.id === 'changes_requested';

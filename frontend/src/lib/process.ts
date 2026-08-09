@@ -124,18 +124,72 @@ export const VARIANT_MEANING: Record<string, string> = {
    renders, which a force layout is not.
    --------------------------------------------------------------------------- */
 
-export const CANVAS = { w: 1280, h: 460 };
+export const CANVAS = { w: 1280, h: 560 };
 export const NODE = { w: 156, h: 68 };
 
-const SPINE_Y = 336;
+/**
+ * Four lanes, because the real log has four kinds of activity and mixing
+ * them into one spine made the picture lie about what follows what.
+ *
+ *   TICKET_Y   Jira lifecycle — where work is tracked
+ *   DETOUR_Y   the ways work goes backwards
+ *   SPINE_Y    the git/PR main line, left to right
+ *   MACHINE_Y  things no human did (CI) and modelled time (meetings)
+ *
+ * The fixture had five hand-placed nodes and used `merge`. The canonical
+ * vocabulary is seventeen activities and the spelling is `merged` — locked
+ * decision #14. A node id that is not in this map used to crash the whole
+ * screen on `NODE_POS[id].cx`; posFor() below makes that impossible.
+ */
+const TICKET_Y = 70;
+const DETOUR_Y = 210;
+const SPINE_Y = 350;
+const MACHINE_Y = 490;
 
 export const NODE_POS: Record<string, { cx: number; cy: number }> = {
+  // Jira lifecycle
+  ticket_created: { cx: 120, cy: TICKET_Y },
+  ticket_started: { cx: 340, cy: TICKET_Y },
+  ticket_in_review: { cx: 560, cy: TICKET_Y },
+  ticket_resolved: { cx: 780, cy: TICKET_Y },
+  ticket_closed: { cx: 1000, cy: TICKET_Y },
+  ticket_reopened: { cx: 1190, cy: TICKET_Y },
+
+  // Going backwards
+  force_push: { cx: 300, cy: DETOUR_Y },
+  changes_requested: { cx: 500, cy: DETOUR_Y },
+  reopened: { cx: 700, cy: DETOUR_Y },
+
+  // The main line
   commit: { cx: 100, cy: SPINE_Y },
-  review: { cx: 386, cy: SPINE_Y },
-  changes_requested: { cx: 660, cy: 108 },
-  merge: { cx: 938, cy: SPINE_Y },
-  deploy: { cx: 1184, cy: SPINE_Y },
+  review_requested: { cx: 300, cy: SPINE_Y },
+  review: { cx: 500, cy: SPINE_Y },
+  approved: { cx: 700, cy: SPINE_Y },
+  merged: { cx: 900, cy: SPINE_Y },
+  deploy: { cx: 1100, cy: SPINE_Y },
+
+  // Not a person
+  ci_run: { cx: 400, cy: MACHINE_Y },
+  meeting: { cx: 800, cy: MACHINE_Y },
 };
+
+/**
+ * Position of a node, with a deterministic parking spot for ids this map has
+ * never heard of.
+ *
+ * A new activity should make the map slightly untidy, never blank. The
+ * fallback is derived from the id itself so it does not move between
+ * renders — an unplaced node that jitters is worse than one sitting in an
+ * odd but stable place.
+ */
+export function posFor(id: string): { cx: number; cy: number } {
+  const known = NODE_POS[id];
+  if (known) return known;
+  let hash = 0;
+  for (let i = 0; i < id.length; i += 1) hash = (hash * 31 + id.charCodeAt(i)) | 0;
+  const slot = Math.abs(hash) % 6;
+  return { cx: 180 + slot * 190, cy: MACHINE_Y + 90 };
+}
 
 export interface DrawnEdge {
   key: string;
@@ -177,8 +231,8 @@ function bow(x1: number, y1: number, x2: number, y2: number, k: number) {
 
 /** Where a line from `from` toward `to` leaves the `from` box. */
 function anchor(from: string, to: string) {
-  const a = NODE_POS[from];
-  const b = NODE_POS[to];
+  const a = posFor(from);
+  const b = posFor(to);
   const dx = b.cx - a.cx;
   const dy = b.cy - a.cy;
   const hw = NODE.w / 2 + 4;

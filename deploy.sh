@@ -42,6 +42,19 @@ if [[ "$backend_ok" != true ]]; then
     exit 1
 fi
 
+# Docker's initdb only loads docs/schema.sql. Everything added after the
+# freeze — the canonical event log, the append-only triggers, and every
+# process/waste/spend/simulate view — lives in backend/migrations and has to
+# be applied explicitly. Without this, a fresh machine comes up with a
+# healthy-looking database and seven routes returning 500.
+# Idempotent, so it is safe on every deploy.
+echo "==> Applying migrations..."
+if ! docker compose -f "$COMPOSE_FILE" exec -T backend python -m app.db.migrate; then
+    echo "Migrations failed. The API will 500 on process/waste/spend until this" >&2
+    echo "is fixed. Check logs:  docker compose -f $COMPOSE_FILE logs backend" >&2
+    exit 1
+fi
+
 echo "==> Waiting for proxy..."
 proxy_ok=false
 for _ in $(seq 1 30); do

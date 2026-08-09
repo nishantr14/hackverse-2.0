@@ -47,8 +47,10 @@ def price(session: Session) -> tuple[float | None, str | None]:
     if n_unpriced:
         return (
             float(total_cost),
-            f"{n_unpriced} of {n_pairs} pair(s) have no matching rate_card "
-            "band — total_cost excludes them",
+            (
+                f"{n_unpriced} of {n_pairs} pair(s) have no matching rate_card "
+                "band — total_cost excludes them"
+            ),
         )
     return float(total_cost), None
 

@@ -16,6 +16,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 import pytest
+
 from app.normalise.case_span import (
     UMBRELLA_MIN_PRS,
     UMBRELLA_SPAN_MULTIPLE,

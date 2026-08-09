@@ -28,6 +28,8 @@ export interface ProjectSpend {
 
 export interface SpendTotals {
   cost: number;
+  /** The labour slice of `cost`. Denominator-compatible with the hours. */
+  labourCost: number;
   authorHours: number;
   reviewHours: number;
   totalHours: number;
@@ -42,19 +44,22 @@ export interface SpendTotals {
 
 export function totals(rows: SpendRow[]): SpendTotals {
   const cost = rows.reduce((s, r) => s + r.cost, 0);
+  const labourCost = rows.reduce((s, r) => s + r.labourCost, 0);
   const authorHours = rows.reduce((s, r) => s + r.authorHours, 0);
   const reviewHours = rows.reduce((s, r) => s + r.reviewHours, 0);
   const totalHours = authorHours + reviewHours;
 
   return {
     cost,
+    labourCost,
     authorHours,
     reviewHours,
     totalHours,
     workItems: rows.length,
     projects: new Set(rows.map((r) => r.project)).size,
     components: new Set(rows.map((r) => `${r.project}/${r.component}`)).size,
-    blendedRate: totalHours > 0 ? cost / totalHours : 0,
+    // Labour over labour-hours. See SpendRow.labourCost.
+    blendedRate: totalHours > 0 ? labourCost / totalHours : 0,
     reviewShare: totalHours > 0 ? reviewHours / totalHours : 0,
   };
 }
