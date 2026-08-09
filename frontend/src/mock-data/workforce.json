@@ -1,0 +1,121 @@
+{
+  "_note": "Placeholder until the resume-ingestion and RAG services are up. Every figure here is invented and must be replaced before the demo claims otherwise — see data/api.ts, which is the only file that reads this one.",
+
+  "requirement": {
+    "project": "Kafka",
+    "component": "Networking",
+    "engineersRequired": 2,
+    "requiredSkills": ["Python", "Backend", "Distributed Systems"],
+    "requiredShift": "evening",
+    "requiredAvailability": ["mon", "tue", "wed", "thu"]
+  },
+
+  "recommendations": [
+    {
+      "employee": "Employee A",
+      "match": 91,
+      "skills": ["Python", "FastAPI", "Distributed Systems"],
+      "preferenceMatch": true,
+      "availabilityMatch": true,
+      "reason": "Strong backend experience, matching evening preference and required availability.",
+      "evidence": {
+        "resume": {
+          "projects": [
+            "Rebuilt a message-broker consumer group protocol handling 40k msg/s",
+            "Migrated a monolithic ingest service to an event-driven pipeline"
+          ],
+          "skills": ["Python", "FastAPI", "PostgreSQL", "Distributed Systems"],
+          "experience": [
+            "4 years backend engineering, 2 of them on streaming infrastructure",
+            "Owned on-call for a broker cluster for 6 months"
+          ]
+        },
+        "preferences": {
+          "preferredShift": "evening",
+          "workStyle": "individual",
+          "availability": ["mon", "tue", "wed", "thu"]
+        },
+        "requirement": {
+          "requiredSkills": ["Python", "Backend", "Distributed Systems"],
+          "requiredShift": "evening",
+          "requiredAvailability": ["mon", "tue", "wed", "thu"]
+        },
+        "policies": [
+          "A reallocation is proposed to the employee, never applied without their acknowledgement.",
+          "Evening-shift assignments require the employee to have stated evening or flexible availability."
+        ]
+      }
+    },
+    {
+      "employee": "Employee C",
+      "match": 68,
+      "skills": ["Docker", "AWS", "DevOps"],
+      "preferenceMatch": true,
+      "availabilityMatch": true,
+      "reason": "Flexible shift covers the requirement and infrastructure depth transfers, but no evidenced distributed-systems work.",
+      "evidence": {
+        "resume": {
+          "projects": [
+            "Built the deployment pipeline for a multi-region service",
+            "Container platform migration across 30+ services"
+          ],
+          "skills": ["Docker", "AWS", "Terraform", "CI/CD"],
+          "experience": [
+            "5 years platform and DevOps engineering",
+            "No production experience on streaming or broker systems"
+          ]
+        },
+        "preferences": {
+          "preferredShift": "flexible",
+          "workStyle": "mixed",
+          "availability": ["mon", "tue", "wed", "thu", "fri"]
+        },
+        "requirement": {
+          "requiredSkills": ["Python", "Backend", "Distributed Systems"],
+          "requiredShift": "evening",
+          "requiredAvailability": ["mon", "tue", "wed", "thu"]
+        },
+        "policies": [
+          "A reallocation is proposed to the employee, never applied without their acknowledgement.",
+          "Ramp-up time is expected where the required skills are not evidenced; the projection accounts for it."
+        ]
+      }
+    },
+    {
+      "employee": "Employee B",
+      "match": 34,
+      "skills": ["React", "TypeScript", "Frontend"],
+      "preferenceMatch": false,
+      "availabilityMatch": false,
+      "reason": "Frontend specialisation and a morning preference; neither the required skills nor the required shift are met.",
+      "evidence": {
+        "resume": {
+          "projects": ["Design-system rebuild across four product surfaces"],
+          "skills": ["React", "TypeScript", "CSS", "Accessibility"],
+          "experience": ["3 years frontend engineering", "No backend or infrastructure experience"]
+        },
+        "preferences": {
+          "preferredShift": "morning",
+          "workStyle": "collaborative",
+          "availability": ["mon", "tue", "wed", "thu", "fri"]
+        },
+        "requirement": {
+          "requiredSkills": ["Python", "Backend", "Distributed Systems"],
+          "requiredShift": "evening",
+          "requiredAvailability": ["mon", "tue", "wed", "thu"]
+        },
+        "policies": [
+          "A reallocation is proposed to the employee, never applied without their acknowledgement.",
+          "A recommendation below the review threshold is shown rather than hidden, so the manager sees who was considered."
+        ]
+      }
+    }
+  ],
+
+  "impact": {
+    "cycleTimePct": -18,
+    "reviewLatencyPct": -23,
+    "costRupees": -180000,
+    "basis": "projected"
+  }
+}

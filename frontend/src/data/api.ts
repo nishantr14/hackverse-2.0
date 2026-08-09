@@ -14,13 +14,25 @@
  * showing zeros because a fetch failed is the one outcome worse than an error.
  */
 
+import processFixture from '../mock-data/process.json';
+import simulatorFixture from '../mock-data/simulator.json';
+import spendFixture from '../mock-data/spend.json';
+import wasteFixture from '../mock-data/waste.json';
+import workforceFixture from '../mock-data/workforce.json';
 import type {
+  EmployeePreferences,
   ProcessGraph,
+  ProjectedImpact,
+  Recommendation,
+  SavePreferencesResult,
+  SimulatorFixture,
   SimulatorInput,
   SimulatorOutput,
   SpendRow,
   WasteRow,
   WasteType,
+  WorkforceFixture,
+  WorkforceRequirement,
 } from './types';
 
 const API_BASE = (
@@ -198,4 +210,71 @@ export interface Meta {
 
 export function getMeta(): Promise<Meta> {
   return get<Meta>('/meta');
+}
+
+/* ---------------------------------------------------------------------------
+ * WORKFORCE
+ *
+ * Same swap-in contract as above, against services that do not exist yet:
+ * resume ingestion, the RAG recommender, and the workforce side of the
+ * simulator. Each function below names the endpoint it is standing in for, so
+ * the backend team replaces one body and the screen does not change.
+ *
+ *   saveEmployeePreferences  ->  POST /workforce/preferences
+ *   getWorkforceRequirement  ->  GET  /workforce/requirement
+ *   getRecommendations       ->  POST /workforce/recommend
+ *   getProjectedImpact       ->  POST /simulate
+ *
+ * NOTHING HERE READS THE ANALYTICS LAYER, and it must stay that way. The event
+ * log is pseudonymised and cannot be attributed to a person; these responses
+ * name people because the people volunteered the data. Joining the two would
+ * turn an anonymous cost figure into a per-person one, which the product
+ * states on screen that it does not do.
+ * ------------------------------------------------------------------------- */
+
+const workforce = workforceFixture as unknown as WorkforceFixture;
+
+/**
+ * POST /workforce/preferences
+ *
+ * Kept local until that endpoint exists. It resolves rather than throwing so
+ * the form is testable end to end now — but it returns `saved` from the
+ * response rather than assuming success, so a real endpoint that rejects a
+ * submission surfaces in the UI instead of being swallowed by an optimistic
+ * "Saved".
+ */
+export function saveEmployeePreferences(
+  prefs: EmployeePreferences,
+): Promise<SavePreferencesResult> {
+  // Referenced so the mock has the same shape of dependency the real call
+  // will have, and so an empty submission is visible while developing.
+  if (!prefs.employeeId) {
+    return Promise.reject(new Error('An employee identifier is required to save preferences.'));
+  }
+  return settle({ saved: true, savedAt: new Date().toISOString() }, 600);
+}
+
+/** GET /workforce/requirement — the opening being staffed. */
+export function getWorkforceRequirement(): Promise<WorkforceRequirement> {
+  return settle(workforce.requirement);
+}
+
+/**
+ * POST /workforce/recommend
+ *
+ * The RAG call. Deliberately slower than the read endpoints for the same
+ * reason `runScenario` is: retrieval plus generation is work, and the UI is
+ * specified to show that it happened rather than appear to look it up.
+ */
+export function getRecommendations(): Promise<Recommendation[]> {
+  return settle(workforce.recommendations, 900);
+}
+
+/**
+ * POST /simulate — the same simulator the Simulator screen drives, asked a
+ * workforce question instead of a project one. Returns deltas, never absolute
+ * figures, so it can never be read as an observed measurement.
+ */
+export function getProjectedImpact(): Promise<ProjectedImpact> {
+  return settle(workforce.impact, 500);
 }

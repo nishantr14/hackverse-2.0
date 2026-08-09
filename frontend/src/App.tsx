@@ -4,6 +4,7 @@ import { ProcessView } from './screens/ProcessView';
 import { SimulatorView } from './screens/SimulatorView';
 import { SpendView } from './screens/SpendView';
 import { WasteView } from './screens/WasteView';
+import { Workforce } from './screens/Workforce';
 
 export default function App() {
   return (
@@ -16,6 +17,11 @@ export default function App() {
         <Route path="/spend" element={<SpendView />} />
         <Route path="/waste" element={<WasteView />} />
         <Route path="/simulator" element={<SimulatorView />} />
+        {/* Workforce sits after the four analytics screens because it is a
+            different kind of surface, not a fifth step of the same argument:
+            it reads volunteered data, and it is the only screen that names
+            anyone. See screens/Workforce.tsx. */}
+        <Route path="/workforce" element={<Workforce />} />
         <Route path="*" element={<Navigate to="/spend" replace />} />
       </Routes>
     </AppShell>
