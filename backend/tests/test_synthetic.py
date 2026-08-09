@@ -83,9 +83,16 @@ def test_an_uncited_fx_rate_refuses_too():
         gen_tokens.load_pricing(cfg)
 
 
-def test_the_shipped_ai_config_ships_blank_on_purpose():
-    with pytest.raises(gen_tokens.AiRatesError):
-        gen_tokens.load_pricing(gen_tokens.load_config())
+def test_the_shipped_ai_config_is_filled_in_and_loads():
+    """config/ai_rates.yaml now carries real citations (Anthropic pricing
+    page, Frankfurter FX). If this ever starts raising AiRatesError again,
+    the config regressed to a placeholder — check config/ai_rates.yaml."""
+    pricing_ = gen_tokens.load_pricing(gen_tokens.load_config())
+    assert pricing_.vendor
+    assert pricing_.input_per_million > 0
+    assert pricing_.output_per_million > 0
+    assert pricing_.fx > 0
+    assert pricing_.source
 
 
 # --- adoption curve -------------------------------------------------------

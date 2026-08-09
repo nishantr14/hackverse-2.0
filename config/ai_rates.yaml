@@ -12,12 +12,14 @@
 # =====================================================================
 
 pricing:
-  # FILL THESE IN. Generation refuses to run until you do — an uncited
-  # price makes a synthetic token count look like a real invoice.
+  # Standard (non-introductory) Claude Sonnet 5 rate. Sonnet 5 is intro-priced
+  # at $2/$10 per MTok through 2026-08-31 — deliberately NOT used here so this
+  # config doesn't go stale mid-demo; the standard rate is what the price
+  # settles to either side of that window.
   source:
-    publisher: ""      # e.g. "Anthropic pricing page"
-    url: ""            # the public price list
-    retrieved: ""      # YYYY-MM-DD
+    publisher: "Anthropic (platform.claude.com docs)"
+    url: "https://platform.claude.com/docs/en/about-claude/models/overview.md"
+    retrieved: "2026-08-09"
 
   # cost_event.cost has no currency column, so everything in this database
   # is one currency and the rate card is in INR. Token prices are published
@@ -25,12 +27,12 @@ pricing:
   quote_currency: USD
   report_currency: INR
   usd_to_inr:
-    rate: null         # e.g. 84.0
-    source: ""         # where the rate came from, and when
+    rate: 95.21
+    source: "Frankfurter API (ECB reference rates), https://api.frankfurter.dev/v1/latest?from=USD&to=INR — rate dated 2026-08-07, retrieved 2026-08-09"
 
-  vendor: ""           # the model name that appears in ai_usage.vendor
-  input_per_million: null
-  output_per_million: null
+  vendor: "claude-sonnet-5"
+  input_per_million: 3.00
+  output_per_million: 15.00
 
 adoption:
   # Share of a sprint's work items that show ANY AI usage. Sprints are
