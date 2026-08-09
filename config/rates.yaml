@@ -15,20 +15,25 @@
 
 rate_card:
   # ------------------------------------------------------------------
-  # ONE publisher, FOUR pages — one per level, each with its own sample
-  # size recorded beside the band below. That is the point: a judge can
-  # open four URLs and re-derive every hourly figure on screen. It is
-  # stronger than mapping the percentiles of a single distribution onto
-  # band names, because PayScale defines the level, we do not.
+  # ONE source, FOUR percentiles. The page publishes a distribution, not a
+  # per-level table, so the band medians below are the p25/p50/p75/p90 of
+  # that single distribution. Stating the mapping is the point: it is one
+  # URL, one retrieval date, and a rule anyone can re-derive.
   #
-  # KNOWN BIAS, SAY IT ON THE SLIDE: PayScale is self-reported and weighted
-  # toward the all-India market including IT services, so these sit BELOW
-  # what a product multinational pays. Our spend figures are therefore
-  # conservative-low — waste is at least this expensive, probably more.
+  # WHY THIS AND NOT THE PAYSCALE CARD: every cost_event row in the demo
+  # database was priced with these figures. The two cards differ by roughly
+  # 2.5x, so swapping the citation without re-running the whole cost chain
+  # would leave the repo claiming one source while the screens showed
+  # another. Decided deliberately — see the note in .claude/CLAUDE.md.
+  #
+  # KNOWN BIAS, SAY IT ON THE SLIDE: levels.fyi is self-reported and skews
+  # toward product and multinational employers, so these sit above the
+  # all-India market including IT services. That makes our spend figures
+  # conservative-high, which is the safe direction for a waste argument.
   # ------------------------------------------------------------------
   source:
-    publisher: "PayScale India — Software Engineer salary research, by level"
-    url: "https://www.payscale.com/research/IN/Job=Software_Engineer/Salary"
+    publisher: "Levels.fyi — Software Engineer salaries, India (percentile distribution; self-reported)"
+    url: "https://www.levels.fyi/t/software-engineer/locations/india"
     retrieved: "2026-08-09"
 
   currency: INR
@@ -43,23 +48,18 @@ rate_card:
   working_days: 230
   hours_per_day: 8
 
-  # Annual AVERAGE BASE salary, in `currency`, BEFORE the loading multiplier.
-  # Each band is its own PayScale India page (same publisher/methodology as
-  # the citation above, different job-title page per level); URL and sample
-  # size noted per band since the top-level citation can only hold one.
+  # Annual medians, in `currency`, BEFORE the loading multiplier.
+  # Percentile of the cited distribution -> band. p50 is the exact published
+  # median; the other three are the published percentile figures.
+  #
+  # These are the figures the rate_card table in the demo database holds.
+  # Change one and you MUST re-run the cost chain, or the screens and this
+  # file stop agreeing.
   bands:
-    # https://www.payscale.com/research/IN/Job=Junior_Software_Engineer/Salary
-    # n=122, last updated 2026-07-02
-    junior: {annual: 407030}
-    # https://www.payscale.com/research/IN/Job=Software_Engineer/Salary
-    # n=4950, last updated 2026-07-12
-    mid: {annual: 813748}
-    # https://www.payscale.com/research/IN/Job=Senior_Software_Engineer/Salary
-    # n=4319, last updated 2026-07-13
-    senior: {annual: 1671574}
-    # https://www.payscale.com/research/IN/Job=Staff_Software_Engineer/Salary
-    # n=120, last updated 2026-06-28
-    staff: {annual: 3923744}
+    junior: {annual: 1660000}    # p25
+    mid: {annual: 2953971}       # p50 (published median)
+    senior: {annual: 4830000}    # p75
+    staff: {annual: 6950000}     # p90
 
 band_inference:
   # ------------------------------------------------------------------

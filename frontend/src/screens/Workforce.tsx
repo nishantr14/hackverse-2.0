@@ -1,41 +1,41 @@
 import { AnimatePresence, motion } from 'framer-motion';
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Calculating } from '../components/Calculating';
-import { ChoiceChips, MultiChoiceChips } from '../components/ChoiceChips';
-import { ErrorPanel, Skeleton } from '../components/Feedback';
+import { CandidateCard } from '../components/CandidateCard';
+import { CandidateCompare } from '../components/CandidateCompare';
+import { ErrorPanel, LoadingPanel } from '../components/Feedback';
 import { GlassCard } from '../components/GlassCard';
-import { ProjectedImpactPanel } from '../components/ProjectedImpact';
-import { RecommendationCard } from '../components/RecommendationCard';
+import { ReallocationResult } from '../components/ReallocationResult';
+import { ScenarioAssumptions } from '../components/ScenarioAssumptions';
 import { ScreenHeader } from '../components/ScreenHeader';
+import { Segmented } from '../components/Segmented';
 import {
-  getProjectedImpact,
-  getRecommendations,
-  getWorkforceRequirement,
-  saveEmployeePreferences,
+  getCandidates,
+  getComponentDetail,
+  getOpenings,
+  getSpendSummary,
+  simulateReallocation,
+  type ComponentDetail,
+  type SpendSummary,
 } from '../data/api';
 import type {
-  EmployeePreferences,
-  ProjectedImpact,
-  Recommendation,
-  Shift,
-  Weekday,
-  WorkArea,
-  WorkStyle,
-  WorkforceRequirement,
+  Candidate,
+  Opening,
+  RelocationAssumptions,
+  SimulatorOutput,
 } from '../data/types';
-import { EASE_GLASS } from '../lib/motion';
-import { useAsync } from '../lib/useAsync';
+import { EASE_GLASS, stagger } from '../lib/motion';
 import {
-  SHIFT_LABEL,
-  SHIFT_OPTIONS,
-  WEEKDAY_LABEL,
-  WEEKDAY_OPTIONS,
-  WORK_AREA_OPTIONS,
-  WORK_STYLE_OPTIONS,
-} from '../lib/workforce';
+  DEFAULT_ASSUMPTIONS,
+  netImpact,
+  systemOutcomes,
+  type NetImpact,
+} from '../lib/reallocation';
+import { useAsync } from '../lib/useAsync';
+import { SHIFT_LABEL, WEEKDAY_LABEL } from '../lib/workforce';
 
 /**
- * Workforce fit.
+ * Workforce recommendations — the director's staffing surface.
  *
  * The one screen in this product that names people, and the only one built on
  * data the person volunteered rather than data we observed. That distinction is
@@ -43,106 +43,173 @@ import {
  * pseudonymised and cannot be attributed to anyone, and if this screen ever
  * looked like an extension of it, the product's privacy claim would be false.
  *
- * The flow is one column, top to bottom, because it is a sequence rather than a
- * dashboard: what the employee told us -> what the opening needs -> who fits and
- * on what evidence -> what the simulator projects if we act on it.
+ * WHAT IS REAL HERE AND WHAT IS NOT, because the screen mixes both on purpose:
+ *   - Candidates, resumes, preferences, locations  -> fixture (volunteered layer)
+ *   - Component headcount and delivery rates       -> observed, from the event log
+ *   - The reallocation itself                      -> REAL, live POST /simulate
+ *   - Relocation, housing, travel, extra ramp-up   -> typed-in assumptions
  *
- * Nothing here assigns anybody. The last control says "Review", and it is
- * deliberately not a "Confirm".
+ * The reallocation can use the real simulator without breaking the boundary
+ * because it asks a question about COMPONENTS, not about people: the source key
+ * is where the candidate said they work, and no identity crosses into the
+ * request. Every figure carries its provenance on screen.
+ *
+ * The flow is one column, top to bottom, because it is a sequence rather than a
+ * dashboard: which opening -> who fits and on what evidence -> compare them ->
+ * what the move would cost once both projects are priced -> proceed or not.
+ *
+ * Nothing here assigns anybody.
  */
-
-/**
- * Stands in for the signed-in employee until there is any notion of a session.
- * Hard-coded on purpose and in one place: the moment auth exists this becomes
- * the only line that changes.
- */
-const EMPLOYEE_ID = 'employee-a';
-
-const DEFAULT_PREFS: EmployeePreferences = {
-  employeeId: EMPLOYEE_ID,
-  preferredShift: 'flexible',
-  workAreas: [],
-  availability: [],
-  workStyle: 'mixed',
-  openToOtherTeams: true,
-};
-
-type SaveState =
-  | { phase: 'idle' }
-  | { phase: 'saving' }
-  | { phase: 'saved'; at: string }
-  | { phase: 'failed'; message: string };
 
 type RecState =
   | { phase: 'idle' }
   | { phase: 'running' }
-  | { phase: 'ready'; recommendations: Recommendation[]; impact: ProjectedImpact }
+  | { phase: 'ready'; candidates: Candidate[] }
+  | { phase: 'failed'; message: string };
+
+type SimState =
+  | { phase: 'idle' }
+  | { phase: 'running' }
+  | { phase: 'ready'; sim: SimulatorOutput; impact: NetImpact }
   | { phase: 'failed'; message: string };
 
 /** Floor on the running state, same reasoning as the simulator's. */
 const MIN_RUN_MS = 900;
 
 export function Workforce() {
-  const requirement = useAsync<WorkforceRequirement>(getWorkforceRequirement, []);
+  const openings = useAsync<Opening[]>(getOpenings, []);
+  const components = useAsync<ComponentDetail[]>(getComponentDetail, []);
+  const spend = useAsync<SpendSummary>(getSpendSummary, []);
 
-  const [prefs, setPrefs] = useState<EmployeePreferences>(DEFAULT_PREFS);
-  const [save, setSave] = useState<SaveState>({ phase: 'idle' });
+  const [openingId, setOpeningId] = useState<string | null>(null);
   const [rec, setRec] = useState<RecState>({ phase: 'idle' });
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [comparedIds, setComparedIds] = useState<string[]>([]);
+  const [assumptions, setAssumptions] = useState<RelocationAssumptions>(DEFAULT_ASSUMPTIONS);
+  const [sim, setSim] = useState<SimState>({ phase: 'idle' });
 
-  /** Any edit invalidates a previous "Saved" — the badge must not outlive it. */
-  function update(patch: Partial<EmployeePreferences>) {
-    setPrefs((p) => ({ ...p, ...patch }));
-    setSave((s) => (s.phase === 'saved' ? { phase: 'idle' } : s));
+  // Seeded from the first opening the backend offers rather than a constant,
+  // so an empty list is an empty state instead of a crash on [0].
+  useEffect(() => {
+    if (openings.status === 'ready' && openingId === null && openings.data.length > 0) {
+      setOpeningId(openings.data[0]!.openingId);
+    }
+  }, [openings, openingId]);
+
+  const opening =
+    openings.status === 'ready'
+      ? (openings.data.find((o) => o.openingId === openingId) ?? null)
+      : null;
+
+  const candidates = rec.phase === 'ready' ? rec.candidates : [];
+  const selected = candidates.find((c) => c.candidateId === selectedId) ?? null;
+  const compared = candidates.filter((c) => comparedIds.includes(c.candidateId));
+
+  const headcount = useMemo(() => {
+    const map = new Map<string, number>();
+    if (components.status === 'ready') {
+      for (const c of components.data) map.set(c.key, c.engineers);
+    }
+    return map;
+  }, [components]);
+
+  const blendedHourly = spend.status === 'ready' ? spend.data.blendedHourly : null;
+
+  /** Changing the opening invalidates everything downstream of it. */
+  function chooseOpening(id: string) {
+    setOpeningId(id);
+    setRec({ phase: 'idle' });
+    setSelectedId(null);
+    setComparedIds([]);
+    setSim({ phase: 'idle' });
   }
 
-  const onSave = useCallback(async () => {
-    setSave({ phase: 'saving' });
-    try {
-      const result = await saveEmployeePreferences(prefs);
-      // Trusts the response rather than assuming success — a backend that
-      // rejects a submission has to be able to say so.
-      setSave(
-        result.saved
-          ? { phase: 'saved', at: result.savedAt }
-          : { phase: 'failed', message: 'The server did not accept these preferences.' },
-      );
-    } catch (err) {
-      setSave({ phase: 'failed', message: err instanceof Error ? err.message : String(err) });
-    }
-  }, [prefs]);
-
   const onRecommend = useCallback(async () => {
+    if (!openingId) return;
     setRec({ phase: 'running' });
+    setSelectedId(null);
+    setComparedIds([]);
+    setSim({ phase: 'idle' });
     const started = Date.now();
     try {
-      const [recommendations, impact] = await Promise.all([
-        getRecommendations(),
-        getProjectedImpact(),
-      ]);
+      const list = await getCandidates(openingId);
       const wait = Math.max(0, MIN_RUN_MS - (Date.now() - started));
       if (wait) await new Promise((r) => setTimeout(r, wait));
-      setRec({ phase: 'ready', recommendations, impact });
+      setRec({ phase: 'ready', candidates: list });
     } catch (err) {
       setRec({ phase: 'failed', message: err instanceof Error ? err.message : String(err) });
     }
-  }, []);
+  }, [openingId]);
 
-  const req = requirement.status === 'ready' ? requirement.data : null;
+  const onSimulate = useCallback(async () => {
+    if (!selected || !opening) return;
+    setSim({ phase: 'running' });
+    const started = Date.now();
+    try {
+      // The real endpoint. Components in, components out — no identity.
+      const result = await simulateReallocation(selected.currentComponent, opening.simulateKey, 1);
+      const wait = Math.max(0, MIN_RUN_MS - (Date.now() - started));
+      if (wait) await new Promise((r) => setTimeout(r, wait));
+      setSim({
+        phase: 'ready',
+        sim: result,
+        impact: netImpact(selected, opening, result, assumptions, blendedHourly),
+      });
+    } catch (err) {
+      setSim({ phase: 'failed', message: err instanceof Error ? err.message : String(err) });
+    }
+  }, [selected, opening, assumptions, blendedHourly]);
+
+  // Editing an assumption re-prices what is already on screen instead of
+  // making the director run it again — the point of the panel is watching the
+  // verdict move as the numbers change.
+  useEffect(() => {
+    if (sim.phase !== 'ready' || !selected || !opening) return;
+    const next = netImpact(selected, opening, sim.sim, assumptions, blendedHourly);
+    setSim((s) => (s.phase === 'ready' ? { ...s, impact: next } : s));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [assumptions, blendedHourly]);
+
+  const error =
+    openings.status === 'error'
+      ? openings.error
+      : components.status === 'error'
+        ? components.error
+        : null;
+
+  const outcomes =
+    sim.phase === 'ready' && selected && opening
+      ? systemOutcomes(
+          selected,
+          opening,
+          sim.sim,
+          (components.status === 'ready' ? components.data : [])
+            .map((c) => c.key)
+            .filter((k) => k !== opening.simulateKey && k !== selected.currentComponent),
+        )
+      : [];
 
   return (
     <>
       <ScreenHeader
         step="05"
         eyebrow="Workforce"
-        title="Match people to work, on evidence they agreed to share"
-        lede="Employees say how they want to work. Recommendations are drawn from that plus their resume, and every one shows what it was grounded in. A human reviews all of it."
+        title="Workforce recommendations"
+        lede="Rank candidates against one opening on evidence they agreed to share, then price the move on both projects before anyone is asked."
       />
 
-      <div className="mx-auto max-w-[1100px] px-6 pt-6 pb-14 sm:px-10">
-        {requirement.status === 'error' ? (
-          <ErrorPanel error={requirement.error} />
+      <div className="mx-auto max-w-[1180px] px-6 pt-6 pb-14 sm:px-10">
+        {error ? (
+          <ErrorPanel error={error} />
+        ) : openings.status !== 'ready' ? (
+          <LoadingPanel label="Loading openings" />
         ) : (
-          <div className="flex flex-col gap-6">
+          <motion.div
+            variants={stagger(0.07)}
+            initial="hidden"
+            animate="show"
+            className="flex flex-col gap-6"
+          >
             {/* Why this screen is allowed to name people at all. Stated up
                 front rather than buried, because the rest of the product
                 promises the opposite and both claims have to stay true. */}
@@ -154,127 +221,53 @@ export function Workforce() {
                 <span className="font-semibold text-[var(--text-primary)]">
                   This screen is separate from the analytics.
                 </span>{' '}
-                Everything here was volunteered — a preference form and a resume the employee
-                supplied. It is never joined to the event log, which stays pseudonymised and
-                carries no per-person figure. Nothing on this screen assigns anybody to anything.
+                Candidates, resumes and preferences were volunteered. They are never joined to the
+                event log, which stays pseudonymised and carries no per-person figure — so no
+                candidate on this page has a cost, an output measure or a productivity score
+                anywhere in this product. The reallocation below is priced by the live simulator,
+                which is asked about components, never about people.
               </p>
             </div>
 
-            {/* 1 — what the employee tells us */}
+            {/* 1 — which opening */}
             <GlassCard className="p-5" animate={false}>
-              <div className="flex flex-wrap items-baseline justify-between gap-x-6 gap-y-1">
+              <div className="flex flex-wrap items-baseline justify-between gap-x-6 gap-y-2">
                 <h2 className="text-[13px] font-semibold text-[var(--text-primary)]">
-                  How you would like to work
+                  The opening being staffed
                 </h2>
-                <p className="text-[11.5px] text-[var(--text-muted)]">
-                  Every field is optional. Blank means no preference, not no answer.
-                </p>
-              </div>
-
-              <div className="mt-5 grid gap-x-8 gap-y-6 md:grid-cols-2">
-                <ChoiceChips
-                  legend="Preferred shift"
-                  options={SHIFT_OPTIONS}
-                  value={prefs.preferredShift}
-                  onChange={(v: Shift) => update({ preferredShift: v })}
-                />
-                <MultiChoiceChips
-                  legend="Interested work areas"
-                  hint="pick any"
-                  options={WORK_AREA_OPTIONS}
-                  value={prefs.workAreas}
-                  onChange={(v: WorkArea[]) => update({ workAreas: v })}
-                />
-                <div className="md:col-span-2">
-                  <MultiChoiceChips
-                    legend="Availability"
-                    hint="pick any"
-                    options={WEEKDAY_OPTIONS}
-                    value={prefs.availability}
-                    onChange={(v: Weekday[]) => update({ availability: v })}
+                {openings.data.length > 1 && (
+                  <Segmented
+                    label="Opening"
+                    options={openings.data.map((o) => ({
+                      value: o.openingId,
+                      label: `${o.component} · ${o.location}`,
+                    }))}
+                    value={openingId ?? openings.data[0]!.openingId}
+                    onChange={chooseOpening}
+                    layoutId="opening-pill"
                   />
-                </div>
-                <ChoiceChips
-                  legend="You work best"
-                  options={WORK_STYLE_OPTIONS}
-                  value={prefs.workStyle}
-                  onChange={(v: WorkStyle) => update({ workStyle: v })}
-                />
-                <ChoiceChips
-                  legend="Open to other teams?"
-                  options={
-                    [
-                      { value: 'yes', label: 'Yes' },
-                      { value: 'no', label: 'No' },
-                    ] as const
-                  }
-                  value={prefs.openToOtherTeams ? 'yes' : 'no'}
-                  onChange={(v) => update({ openToOtherTeams: v === 'yes' })}
-                />
-              </div>
-
-              <div
-                className="mt-5 flex flex-wrap items-center gap-x-4 gap-y-2 border-t pt-4"
-                style={{ borderColor: 'var(--border)' }}
-              >
-                <button
-                  type="button"
-                  onClick={() => void onSave()}
-                  disabled={save.phase === 'saving'}
-                  className="h-9 rounded-lg border px-5 text-[13px] font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-40"
-                  style={{
-                    color: 'var(--bg-page)',
-                    background: 'var(--ui)',
-                    borderColor: 'var(--ui)',
-                  }}
-                >
-                  {save.phase === 'saving' ? 'Saving…' : 'Save preferences'}
-                </button>
-
-                {save.phase === 'saved' && (
-                  <span className="text-[12px]" style={{ color: 'var(--teal)' }}>
-                    Saved at {new Date(save.at).toLocaleTimeString()}. You can change these at any
-                    time.
-                  </span>
-                )}
-                {save.phase === 'failed' && (
-                  <span className="text-[12px]" style={{ color: 'var(--coral)' }}>
-                    {save.message}
-                  </span>
-                )}
-                {save.phase === 'idle' && (
-                  <span className="text-[12px] text-[var(--text-muted)]">
-                    Stored against your employee record, not the event log.
-                  </span>
                 )}
               </div>
-            </GlassCard>
 
-            {/* 2 — the opening */}
-            <GlassCard className="p-5" animate={false}>
-              <h2 className="text-[13px] font-semibold text-[var(--text-primary)]">
-                The opening being staffed
-              </h2>
-
-              {req ? (
+              {opening ? (
                 <>
                   <div className="mt-4 flex flex-wrap items-baseline gap-x-3 gap-y-1">
                     <span className="text-[20px] font-semibold text-[var(--text-primary)]">
-                      {req.project} / {req.component}
+                      {opening.project} / {opening.component}
                     </span>
                     <span className="tnum text-[12.5px] text-[var(--text-secondary)]">
-                      {req.engineersRequired} engineer
-                      {req.engineersRequired === 1 ? '' : 's'} required
+                      {opening.engineersRequired} engineer
+                      {opening.engineersRequired === 1 ? '' : 's'} required · {opening.location}
                     </span>
                   </div>
 
-                  <dl className="mt-4 grid gap-x-8 gap-y-3 sm:grid-cols-3">
+                  <dl className="mt-4 grid gap-x-8 gap-y-3 sm:grid-cols-4">
                     <div>
                       <dt className="text-[11px] tracking-[0.08em] text-[var(--text-secondary)] uppercase">
                         Required skills
                       </dt>
                       <dd className="mt-1.5 text-[12.5px] text-[var(--text-primary)]">
-                        {req.requiredSkills.join(', ')}
+                        {opening.requiredSkills.join(', ')}
                       </dd>
                     </div>
                     <div>
@@ -282,7 +275,7 @@ export function Workforce() {
                         Required shift
                       </dt>
                       <dd className="mt-1.5 text-[12.5px] text-[var(--text-primary)]">
-                        {SHIFT_LABEL[req.requiredShift]}
+                        {SHIFT_LABEL[opening.requiredShift]}
                       </dd>
                     </div>
                     <div>
@@ -290,15 +283,21 @@ export function Workforce() {
                         Required availability
                       </dt>
                       <dd className="mt-1.5 text-[12.5px] text-[var(--text-primary)]">
-                        {req.requiredAvailability.map((d) => WEEKDAY_LABEL[d]).join(', ')}
+                        {opening.requiredAvailability.map((d) => WEEKDAY_LABEL[d]).join(', ')}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt className="text-[11px] tracking-[0.08em] text-[var(--text-secondary)] uppercase">
+                        Current headcount
+                      </dt>
+                      <dd className="tnum mt-1.5 text-[12.5px] text-[var(--text-primary)]">
+                        {headcount.get(opening.simulateKey) ?? '—'} engineers{' '}
+                        <span className="text-[11px] text-[var(--text-muted)]">observed</span>
                       </dd>
                     </div>
                   </dl>
 
-                  <div
-                    className="mt-5 border-t pt-4"
-                    style={{ borderColor: 'var(--border)' }}
-                  >
+                  <div className="mt-5 border-t pt-4" style={{ borderColor: 'var(--border)' }}>
                     <button
                       type="button"
                       onClick={() => void onRecommend()}
@@ -315,14 +314,13 @@ export function Workforce() {
                   </div>
                 </>
               ) : (
-                <div className="mt-4 flex flex-col gap-3">
-                  <Skeleton className="h-7 w-64" />
-                  <Skeleton className="h-16" />
-                </div>
+                <p className="mt-4 text-[12.5px] text-[var(--text-muted)]">
+                  No openings are published right now.
+                </p>
               )}
             </GlassCard>
 
-            {/* 3 — the retrieval, seen to happen */}
+            {/* 2 — the retrieval, seen to happen */}
             <AnimatePresence>
               {rec.phase === 'running' && (
                 <motion.div
@@ -339,48 +337,137 @@ export function Workforce() {
               )}
             </AnimatePresence>
 
-            {rec.phase === 'failed' && (
-              <ErrorPanel error={new Error(rec.message)} />
-            )}
+            {rec.phase === 'failed' && <ErrorPanel error={new Error(rec.message)} />}
 
-            {/* 4 — who fits, and on what evidence */}
-            {rec.phase === 'ready' && (
+            {/* 3 — who fits, on what evidence */}
+            {rec.phase === 'ready' && opening && (
               <>
                 <div className="flex flex-col gap-3">
                   <div className="flex flex-wrap items-baseline justify-between gap-x-6 gap-y-1">
                     <h2 className="text-[13px] font-semibold text-[var(--text-primary)]">
-                      Recommended
+                      Ranked for this opening
                     </h2>
                     <p className="text-[11.5px] text-[var(--text-muted)]">
-                      Ranked by fit to this opening. Open any card to see what it was grounded in.
+                      Open “Why?” for the reasoning. Tick two or more to compare them.
                     </p>
                   </div>
-                  {rec.recommendations.map((r, i) => (
-                    <RecommendationCard key={r.employee} rec={r} rank={i + 1} />
+
+                  {candidates.map((c, i) => (
+                    <CandidateCard
+                      key={c.candidateId}
+                      candidate={c}
+                      opening={opening}
+                      rank={i + 1}
+                      selected={selectedId === c.candidateId}
+                      onSelect={() => {
+                        setSelectedId(c.candidateId);
+                        setSim({ phase: 'idle' });
+                      }}
+                      compared={comparedIds.includes(c.candidateId)}
+                      onToggleCompare={() =>
+                        setComparedIds((ids) =>
+                          ids.includes(c.candidateId)
+                            ? ids.filter((x) => x !== c.candidateId)
+                            : [...ids, c.candidateId],
+                        )
+                      }
+                    />
                   ))}
                 </div>
 
-                <ProjectedImpactPanel impact={rec.impact} />
+                {compared.length >= 2 && (
+                  <CandidateCompare
+                    candidates={compared}
+                    opening={opening}
+                    rampUpWeeks={assumptions.extraRampUpWeeks}
+                  />
+                )}
 
-                <div
-                  className="flex flex-wrap items-center justify-between gap-x-6 gap-y-3 border-t pt-4"
-                  style={{ borderColor: 'var(--border)' }}
-                >
-                  <p className="max-w-xl text-[12px] leading-relaxed text-[var(--text-primary)]">
-                    A recommendation, not a decision. Nobody is moved until a human reviews this and
-                    the employee agrees.
-                  </p>
-                  <button
-                    type="button"
-                    className="h-9 shrink-0 rounded-lg border px-4 text-[13px] transition-colors"
-                    style={{ color: 'var(--text-secondary)', borderColor: 'var(--border)' }}
+                {/* 4 — the move, priced */}
+                <GlassCard className="p-5" animate={false}>
+                  <div className="flex flex-wrap items-baseline justify-between gap-x-6 gap-y-1">
+                    <h2 className="text-[13px] font-semibold text-[var(--text-primary)]">
+                      Reallocation scenario
+                    </h2>
+                    <p className="text-[11.5px] text-[var(--text-muted)]">
+                      {selected
+                        ? `${selected.employee} → ${opening.project} / ${opening.component}`
+                        : 'Select a candidate above to price a move.'}
+                    </p>
+                  </div>
+
+                  <div className="mt-4">
+                    <ScenarioAssumptions
+                      value={assumptions}
+                      onChange={setAssumptions}
+                      disabled={!selected}
+                    />
+                  </div>
+
+                  <div
+                    className="mt-5 flex flex-wrap items-center gap-x-4 gap-y-2 border-t pt-4"
+                    style={{ borderColor: 'var(--border)' }}
                   >
-                    Review recommendation
-                  </button>
-                </div>
+                    <button
+                      type="button"
+                      onClick={() => void onSimulate()}
+                      disabled={!selected || sim.phase === 'running'}
+                      className="h-9 rounded-lg border px-5 text-[13px] font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-40"
+                      style={{
+                        color: 'var(--bg-page)',
+                        background: 'var(--ui)',
+                        borderColor: 'var(--ui)',
+                      }}
+                    >
+                      {sim.phase === 'running' ? 'Simulating…' : 'Simulate reallocation'}
+                    </button>
+                    <span className="text-[12px] text-[var(--text-muted)]">
+                      {selected
+                        ? 'Priced by the live simulator against the event log, then the assumptions above are added.'
+                        : 'No candidate selected.'}
+                    </span>
+                  </div>
+                </GlassCard>
+
+                <AnimatePresence>
+                  {sim.phase === 'running' && (
+                    <motion.div
+                      initial={{ opacity: 0, height: 0 }}
+                      animate={{ opacity: 1, height: 'auto' }}
+                      exit={{ opacity: 0, height: 0 }}
+                      transition={{ duration: 0.35, ease: EASE_GLASS }}
+                      style={{ overflow: 'hidden' }}
+                    >
+                      <GlassCard className="p-6" animate={false}>
+                        <Calculating />
+                      </GlassCard>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+
+                {sim.phase === 'failed' && <ErrorPanel error={new Error(sim.message)} />}
+
+                {sim.phase === 'ready' && selected && (
+                  <ReallocationResult
+                    candidate={selected}
+                    opening={opening}
+                    sim={sim.sim}
+                    impact={sim.impact}
+                    outcomes={outcomes}
+                    sourceHeadcount={headcount.get(selected.currentComponent) ?? null}
+                    destHeadcount={headcount.get(opening.simulateKey) ?? null}
+                  />
+                )}
               </>
             )}
-          </div>
+
+            <p className="text-[12px] leading-relaxed text-[var(--text-secondary)]">
+              Candidate data is volunteered and fixture-backed until the resume and recommender
+              services exist. Delivery impact, component headcount and the blended labour rate are
+              computed from the event log. Relocation, accommodation, travel and additional ramp-up
+              are scenario assumptions typed in above, and are labelled as such wherever they appear.
+            </p>
+          </motion.div>
         )}
       </div>
     </>

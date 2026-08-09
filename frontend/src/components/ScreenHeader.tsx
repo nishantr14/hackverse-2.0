@@ -43,7 +43,12 @@ const CONDENSE_EXIT = 32;
 const EASE = 'cubic-bezier(0.22, 1, 0.36, 1)';
 
 interface ScreenHeaderProps {
-  step: string;
+  /**
+   * The position in the analytics sequence. Omitted on the employee screens,
+   * which are not steps of that argument — the eyebrow stands alone there
+   * rather than showing an empty slot and a stray separator.
+   */
+  step?: string;
   eyebrow: string;
   title: string;
   lede: string;
@@ -130,10 +135,14 @@ export function ScreenHeader({ step, eyebrow, title, lede, controls, headline }:
       <div className="flex flex-wrap items-start justify-between gap-x-10 gap-y-3">
         <div className="min-w-0 flex-1">
           <p className="flex items-center gap-2 text-[10px] tracking-[0.16em] text-[var(--text-secondary)] uppercase">
-            <span className="tnum">{step}</span>
-            <span aria-hidden style={{ color: 'var(--border-strong)' }}>
-              /
-            </span>
+            {step && (
+              <>
+                <span className="tnum">{step}</span>
+                <span aria-hidden style={{ color: 'var(--border-strong)' }}>
+                  /
+                </span>
+              </>
+            )}
             <span>{eyebrow}</span>
           </p>
 
