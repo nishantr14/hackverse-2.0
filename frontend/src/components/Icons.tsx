@@ -72,6 +72,13 @@ export const IconLock = ({ className }: P) => (
   </svg>
 );
 
+export const IconDownload = ({ className }: P) => (
+  <svg {...base} className={className}>
+    <path d="M8 1.8v8.4M4.6 7.2 8 10.6l3.4-3.4" />
+    <path d="M2 12.4v1.2c0 .55.45 1 1 1h10c.55 0 1-.45 1-1v-1.2" />
+  </svg>
+);
+
 export const IconDatabase = ({ className }: P) => (
   <svg {...base} className={className}>
     <ellipse cx="8" cy="3.6" rx="5" ry="1.9" />
