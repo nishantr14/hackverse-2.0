@@ -91,6 +91,33 @@ def test_cors_allows_the_vite_dev_server():
     assert response.headers["access-control-allow-origin"] == "http://localhost:5173"
 
 
+def test_cors_rejects_an_origin_not_in_the_allowlist():
+    """A permissive CORS regression (e.g. wildcarding) would let this through."""
+    response = TestClient(app).get(
+        "/health", headers={"Origin": "http://evil.example"}
+    )
+    assert "access-control-allow-origin" not in response.headers
+
+
+def test_allowed_origins_default_matches_the_vite_dev_server():
+    assert Settings().allowed_origins_list == [
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+    ]
+
+
+def test_allowed_origins_list_splits_csv():
+    """ALLOWED_ORIGINS is how a LAN/VPN deployment adds its own address
+    without a code change — see deploy.sh and infra/docker-compose.yml."""
+    s = Settings(
+        allowed_origins="http://localhost:5173, http://172.20.10.5:5082"
+    )
+    assert s.allowed_origins_list == [
+        "http://localhost:5173",
+        "http://172.20.10.5:5082",
+    ]
+
+
 def test_all_four_routers_are_known_even_before_they_exist():
     assert set(ROUTER_MODULES) == {"spend", "waste", "process", "simulate"}
 

@@ -114,6 +114,7 @@ both places or neither.
 | `MEETING_HOURS_PER_WEEK` | An **assumption**, surfaced in the UI as a slider — never observed data |
 | `DATA_SOURCE` | `real` or `fixtures`; badges the dataset in the UI |
 | `VITE_API_BASE_URL` | Frontend's backend base URL |
+| `ALLOWED_ORIGINS` | Origins the API accepts CORS requests from (comma-separated) |
 
 ## Running ingestion
 
@@ -189,6 +190,35 @@ cd backend && ../backend/.venv/bin/uvicorn app.main:app --reload
 # frontend (separate terminal)
 cd frontend && npm run dev
 ```
+
+### Reachable from another machine (LAN/VPN, e.g. a 172.x address)
+
+`localhost` means something different on every machine, so it never works
+across a network — the frontend's API calls and the backend's CORS allowlist
+both need the actual address.
+
+**Docker:** set `HOST_IP` once; the compose file wires it into both sides:
+
+```bash
+HOST_IP=172.20.10.5 docker compose -f infra/docker-compose.yml up
+```
+
+Then browse to `http://172.20.10.5:5173` from any machine on that network.
+
+**Manual:** both dev servers default to binding `localhost` only, and
+`VITE_API_BASE_URL`/`ALLOWED_ORIGINS` need to name the real address:
+
+```bash
+# backend — bind all interfaces, not just localhost
+cd backend && ALLOWED_ORIGINS="http://172.20.10.5:5173" \
+  ../backend/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --reload
+
+# frontend (separate terminal) — --host binds all interfaces
+cd frontend && VITE_API_BASE_URL="http://172.20.10.5:8000" npm run dev -- --host
+```
+
+The host's firewall must also allow inbound `5173` and `8000` from that
+network — this is an OS setting, not something either dev server controls.
 
 ## Running tests
 
