@@ -390,6 +390,93 @@ def test_timeline_counting_survives_missing_sections():
     assert stats.review_requested_events == 0
 
 
+def commit_node(oid: str = "c1", login: str = "octocat") -> dict:
+    return {
+        "commit": {
+            "oid": oid,
+            "authoredDate": "2026-03-01T09:00:00Z",
+            "additions": 5,
+            "deletions": 1,
+            "changedFiles": 1,
+            "author": {"user": {"login": login, "__typename": "User"}},
+        }
+    }
+
+
+def test_commits_are_tallied():
+    node = pr_node()
+    node["commits"] = {
+        "totalCount": 2,
+        "nodes": [commit_node("c1"), commit_node("c2")],
+    }
+    stats = Stats()
+    _count_timeline(node, stats)
+    assert stats.commits_fetched == 2
+    assert stats.commits_truncated == 0
+
+
+def test_commits_truncated_at_the_connection_bound_is_flagged():
+    """Squash history that runs past 100 commits undercounts — flag it rather
+    than silently reporting a partial commit list as the whole story."""
+    node = pr_node()
+    node["commits"] = {"totalCount": 250, "nodes": [commit_node("c1")]}
+    stats = Stats()
+    _count_timeline(node, stats)
+    assert stats.commits_truncated == 1
+
+
+def test_missing_commits_section_does_not_explode():
+    stats = Stats()
+    _count_timeline(pr_node(), stats)  # pr_node() has no "commits" key
+    assert stats.commits_fetched == 0
+    assert stats.commits_truncated == 0
+
+
+# --- commits connection ---------------------------------------------------
+
+
+def test_commits_connection_is_in_the_query():
+    assert "commits(first: 100)" in PR_QUERY
+    for field in ("oid", "authoredDate", "changedFiles"):
+        assert field in PR_QUERY
+
+
+def test_commit_author_login_is_scrubbed_at_its_nested_depth():
+    """The login sits two levels deeper here than a PR/review author
+    (commit.author.user.login, not author.login) — the recursive scrubber
+    must still find it."""
+    node = pr_node()
+    node["commits"] = {"totalCount": 1, "nodes": [commit_node(login="ghost-author")]}
+    body = scrub_payload(node)
+    _assert_scrubbed(body)  # raises if "login" survived anywhere
+    user = body["commits"]["nodes"][0]["commit"]["author"]["user"]
+    assert "actor_hash" in user
+    assert "login" not in user
+
+
+def test_a_bot_commit_author_is_marked_not_hashed():
+    node = pr_node()
+    node["commits"] = {
+        "totalCount": 1,
+        "nodes": [
+            {
+                "commit": {
+                    "oid": "c1",
+                    "authoredDate": "2026-03-01T09:00:00Z",
+                    "additions": 1,
+                    "deletions": 0,
+                    "changedFiles": 1,
+                    "author": {"user": {"login": "dependabot[bot]", "__typename": "Bot"}},
+                }
+            }
+        ],
+    }
+    body = scrub_payload(node)
+    user = body["commits"]["nodes"][0]["commit"]["author"]["user"]
+    assert user["is_bot"] is True
+    assert "actor_hash" not in user
+
+
 # --- bare logins in branch names -----------------------------------------
 
 

@@ -141,12 +141,14 @@ MIN_PAGE_SIZE = 10
 #: PRs per page. NOT MAX_PAGE_SIZE, and the difference is the point.
 #:
 #: Each PR node now carries up to 100 files + 100 reviews + 100 timeline items
-#: + 20 labels, so 100 PRs is ~32,000 nodes in one response and apache/kafka
-#: answered 504 every time. The configuration that worked before reviews and
-#: timelineItems were raised was 100 x ~150 nodes; 50 x ~320 lands in the same
-#: place. The adaptive halving below still exists as the safety net, but it
-#: should not be the thing that finds a working size on every single run.
-PR_PAGE_SIZE = 50
+#: + 20 labels + 100 commits, so 100 PRs is a lot of nodes in one response and
+#: apache/kafka answered 504 every time at the old, commits-less size of 50.
+#: The commits connection (added for P2: squashed merges collapse a PR's real
+#: commit history to one trunk commit, leaving session inference nothing to
+#: cluster) makes every page heavier again, so the starting size drops to 25.
+#: The adaptive halving below still exists as the safety net, but it should
+#: not be the thing that finds a working size on every single run.
+PR_PAGE_SIZE = 25
 
 #: Attempts inside execute() before fetch_repo is allowed to shrink the page.
 #: A page the server cannot compute will not compute on the sixth ask either,
@@ -208,6 +210,19 @@ query PullRequests($owner: String!, $name: String!, $cursor: String, $pageSize: 
         files(first: 100) { nodes { path } }
         reviews(first: 100) {
           nodes { state submittedAt author { login __typename } }
+        }
+        commits(first: 100) {
+          totalCount
+          nodes {
+            commit {
+              oid
+              authoredDate
+              additions
+              deletions
+              changedFiles
+              author { user { login __typename } }
+            }
+          }
         }
         timelineItems(
           first: 100
@@ -281,6 +296,8 @@ class Stats:
     stopped_on_window: bool = False
     content_outside_window: int = 0
     page_size_reductions: int = 0
+    commits_fetched: int = 0
+    commits_truncated: int = 0
 
 
 @dataclass
@@ -757,6 +774,12 @@ def _count_timeline(node: dict[str, Any], stats: Stats) -> None:
             stats.force_pushes += 1
     stats.reviews += len((node.get("reviews") or {}).get("nodes") or [])
 
+    commits = node.get("commits") or {}
+    commit_nodes = commits.get("nodes") or []
+    stats.commits_fetched += len(commit_nodes)
+    if int(commits.get("totalCount") or 0) > len(commit_nodes):
+        stats.commits_truncated += 1
+
 
 def _write_page(session: Session, repo: str, nodes: list[dict[str, Any]]) -> int:
     rows = []
@@ -897,6 +920,12 @@ def _print_report(repo: str, stats: Stats) -> None:
     if stats.review_requested_events == 0 and stats.pull_requests:
         print("    WARNING: zero review_requested events — review latency,")
         print("    one of our headline waste numbers, cannot be computed.")
+    print(f"    commits fetched          {stats.commits_fetched}")
+    if stats.commits_truncated:
+        print(
+            f"    WARNING: {stats.commits_truncated} PR(s) have >100 commits — "
+            "truncated at the connection bound, undercounts those PRs only."
+        )
     print("\n  budget")
     print(f"    points spent             {stats.points_spent}")
     print(f"    remaining this hour      {stats.remaining}")

@@ -142,22 +142,22 @@ def test_component_breaks_ties_alphabetically_for_reproducibility():
 def test_pr_with_no_ticket_key_falls_through_to_pr_number(no_ticket):
     """Never drop a PR for lacking a ticket key."""
     mapped = mg.map_pull_request(no_ticket)
-    assert mapped.work_item["work_item_id"] == "apache/kafka#19565"
+    assert mapped.work_item["work_item_id"] == "apache/kafka#900001"
     assert mapped.case_source == "pr"
     assert mapped.work_item["jira_key"] is None
 
 
 def test_ticket_key_comes_from_the_title_first(review_rounds):
     mapped = mg.map_pull_request(review_rounds)
-    assert mapped.work_item["work_item_id"] == "KAFKA-18220"
+    assert mapped.work_item["work_item_id"] == "KAFKA-900013"
     assert mapped.case_source == "ticket_key"
 
 
 def test_body_mentions_do_not_steal_the_case(review_rounds):
-    """The body names KAFKA-17999 and KAFKA-12345; the title must win."""
-    assert "KAFKA-17999" in review_rounds["body"]
+    """The body names KAFKA-900014 and KAFKA-900015; the title must win."""
+    assert "KAFKA-900014" in review_rounds["body"]
     mapped = mg.map_pull_request(review_rounds)
-    assert mapped.work_item["work_item_id"] == "KAFKA-18220"
+    assert mapped.work_item["work_item_id"] == "KAFKA-900013"
 
 
 def test_ticket_key_falls_back_to_the_branch():
@@ -185,7 +185,7 @@ def test_ticket_key_falls_back_to_the_body_last():
 
 def test_closing_issue_is_the_second_rung(with_issue):
     mapped = mg.map_pull_request(with_issue)
-    assert mapped.work_item["work_item_id"] == "apache/kafka#20455"
+    assert mapped.work_item["work_item_id"] == "apache/kafka#900010"
     assert mapped.case_source == "issue"
 
 
@@ -320,6 +320,101 @@ def test_merged_event_has_no_fabricated_actor(no_ticket):
     assert merged["attrs"]["actor_basis"] == "not_fetched"
 
 
+# =====================================================================
+# The PR's own commits (P2: squash-merge leaves session inference nothing
+# to cluster; these intermediate commits are the real signal)
+# =====================================================================
+
+
+def _pr_commit(oid="c1", authored="2026-04-01T09:00:00Z"):
+    """A scrubbed commit node, exactly as github_connector would land it."""
+    return {
+        "commit": {
+            "oid": oid,
+            "authoredDate": authored,
+            "additions": 4,
+            "deletions": 1,
+            "changedFiles": 1,
+            "author": {"user": {"actor_hash": "a" * 16, "is_bot": False, "__typename": "User"}},
+        }
+    }
+
+
+def test_pr_commits_become_commit_events(review_rounds):
+    review_rounds["commits"] = {"nodes": [_pr_commit("c1"), _pr_commit("c2")]}
+    mapped = mg.map_pull_request(review_rounds)
+    commits = [e for e in mapped.events if e["activity"] == "commit"]
+    assert {e["attrs"]["sha"] for e in commits} == {"c1", "c2"}
+    assert all(e["work_item_id"] == "KAFKA-900013" for e in commits)
+    assert all(e["source"] == "github" for e in commits)
+
+
+def test_commit_event_id_matches_git_local_scheme(review_rounds):
+    """The whole dedup story depends on this: a commit git_local already saw
+    on trunk must converge on the SAME event_id, not create a second row."""
+    ts = datetime(2026, 4, 1, 9, 0, tzinfo=UTC)
+    review_rounds["commits"] = {"nodes": [_pr_commit("c1", authored="2026-04-01T09:00:00Z")]}
+    mapped = mg.map_pull_request(review_rounds)
+    commit_event = next(e for e in mapped.events if e["activity"] == "commit")
+    assert commit_event["event_id"] == git_event_id("c1", ts)
+
+
+def test_commit_ts_is_the_authored_date_not_a_commit_date(review_rounds):
+    """Decision: author date for a commit, never the commit date."""
+    review_rounds["commits"] = {"nodes": [_pr_commit("c1", authored="2026-04-01T09:00:00Z")]}
+    mapped = mg.map_pull_request(review_rounds)
+    commit_event = next(e for e in mapped.events if e["activity"] == "commit")
+    assert commit_event["ts"] == datetime(2026, 4, 1, 9, 0, tzinfo=UTC)
+
+
+def test_bot_commit_author_is_dropped_not_mapped(review_rounds):
+    bot_commit = {
+        "commit": {
+            "oid": "c-bot",
+            "authoredDate": "2026-04-01T09:00:00Z",
+            "additions": 1,
+            "deletions": 0,
+            "changedFiles": 1,
+            "author": {"user": {"is_bot": True, "__typename": "Bot"}},
+        }
+    }
+    review_rounds["commits"] = {"nodes": [bot_commit]}
+    mapped = mg.map_pull_request(review_rounds)
+    assert not [e for e in mapped.events if e["activity"] == "commit"]
+    assert mapped.bot_events_dropped == 1
+
+
+def test_commit_matching_the_merge_commit_oid_is_flagged_squash():
+    """Where a PR commit oid equals the trunk merge commit's oid, it IS the
+    squash artefact — flag it so detectors can exclude it, per P2."""
+    node = load("pr_ticket_key_repoints_commit")  # mergeCommit.oid = "5" * 40
+    node["commits"] = {
+        "nodes": [
+            _pr_commit(oid="5" * 40, authored="2026-07-05T08:00:00Z"),
+            _pr_commit(oid="intermediate-1", authored="2026-07-04T08:00:00Z"),
+        ]
+    }
+    mapped = mg.map_pull_request(node)
+    by_sha = {e["attrs"]["sha"]: e for e in mapped.events if e["activity"] == "commit"}
+    assert by_sha["5" * 40]["attrs"]["is_squash_merge"] is True
+    assert by_sha["intermediate-1"]["attrs"]["is_squash_merge"] is False
+
+
+def test_a_commit_with_no_authored_date_is_skipped(review_rounds):
+    review_rounds["commits"] = {
+        "nodes": [{"commit": {"oid": "no-date", "author": {"user": None}}}]
+    }
+    mapped = mg.map_pull_request(review_rounds)
+    assert not [e for e in mapped.events if e["activity"] == "commit"]
+
+
+def test_a_pr_with_no_commits_section_maps_the_same_as_before(no_ticket):
+    """Old fixtures/payloads with no `commits` key must not break."""
+    assert "commits" not in no_ticket
+    mapped = mg.map_pull_request(no_ticket)
+    assert not [e for e in mapped.events if e["activity"] == "commit"]
+
+
 def test_every_event_carries_source_github(review_rounds):
     """Decision #11: a row without a source is a bug."""
     for event in mg.map_pull_request(review_rounds).events:
@@ -328,7 +423,7 @@ def test_every_event_carries_source_github(review_rounds):
 
 def test_every_event_hangs_off_the_resolved_case(review_rounds):
     mapped = mg.map_pull_request(review_rounds)
-    assert {e["work_item_id"] for e in mapped.events} == {"KAFKA-18220"}
+    assert {e["work_item_id"] for e in mapped.events} == {"KAFKA-900013"}
 
 
 # =====================================================================
@@ -386,7 +481,7 @@ def test_work_item_carries_no_sprint_key(review_rounds):
 
 
 def test_work_item_records_the_pr_as_source_ref(no_ticket):
-    assert mg.map_pull_request(no_ticket).work_item["source_ref"] == "apache/kafka#19565"
+    assert mg.map_pull_request(no_ticket).work_item["source_ref"] == "apache/kafka#900001"
 
 
 def test_closed_at_falls_back_to_merged_at():
@@ -812,6 +907,81 @@ def _land_pr(session, body: dict) -> None:
     )
 
 
+def test_write_work_items_dedupes_a_batch_colliding_on_the_same_case(pg_engine):
+    """Two PRs resolving to the same ticket key (a revert and its original,
+    say) must not crash the batch upsert — Postgres rejects an ON CONFLICT
+    DO UPDATE statement that touches the same row twice in one VALUES list.
+    No hand-written fixture pair triggers this; at full real-data scale it's
+    routine."""
+    from sqlalchemy.orm import Session as OrmSession
+
+    session = OrmSession(pg_engine)
+    try:
+        row = {
+            "work_item_id": "KAFKA-900099",
+            "repo": "apache/kafka",
+            "component": "core",
+            "epic": None,
+            "opened_at": None,
+            "closed_at": None,
+            "source_ref": "apache/kafka#1",
+            "case_source": "ticket_key",
+            "jira_key": "KAFKA-900099",
+        }
+        other = {**row, "source_ref": "apache/kafka#2"}
+        written = mg._write_work_items(session, [row, other])
+        assert written == 1
+    finally:
+        session.rollback()
+        session.close()
+
+
+def test_write_events_chunks_batches_past_the_parameter_limit(pg_engine):
+    """A single INSERT ... VALUES statement is capped by Postgres at 65,535
+    bind parameters. P2's commit backfill writes far more rows than one
+    unchunked statement could hold — this proves the chunking actually works
+    end to end, not just that a small batch doesn't raise."""
+    from sqlalchemy import func, select
+    from sqlalchemy.orm import Session as OrmSession
+
+    from app.db.models import EventLog, WorkItem
+
+    session = OrmSession(pg_engine)
+    try:
+        session.add(
+            WorkItem(
+                work_item_id="apache/kafka@chunk-test",
+                repo="apache/kafka",
+                component="core",
+                case_source="pr",
+            )
+        )
+        session.flush()
+        rows = [
+            {
+                "event_id": f"chunk-test-{i:06d}",
+                "work_item_id": "apache/kafka@chunk-test",
+                "actor_hash": None,
+                "activity": "commit",
+                "ts": datetime(2026, 1, 1, tzinfo=UTC),
+                "source": "github",
+                "attrs": {"sha": f"sha{i}"},
+            }
+            for i in range(mg.EVENT_WRITE_CHUNK + 500)
+        ]
+        written = mg._write_events(session, rows)
+        assert written == len(rows)
+        count = session.execute(
+            select(func.count())
+            .select_from(EventLog)
+            .where(EventLog.event_id.like("chunk-test-%"))
+        ).scalar_one()
+        assert count == len(rows)
+    finally:
+        session.rollback()
+        session.close()
+
+
 @pytest.fixture
 def seeded_session(pg_engine):
     """A session with the fixtures landed in raw_payload, rolled back after.
@@ -838,7 +1008,7 @@ def seeded_session(pg_engine):
             )
 
         # git_local's world before the PR mapper runs: a provisional case
-        # holding the squash commit that PR 20600 will claim.
+        # holding the squash commit that PR 900005 will claim.
         session.add(
             WorkItem(
                 work_item_id=f"{FIXTURE_REPO}@555555555555",
@@ -886,7 +1056,7 @@ def test_end_to_end_repoints_the_provisional_commit(seeded_session):
     landed = seeded_session.execute(
         select(EventLog.work_item_id).where(EventLog.event_id == "fixture-commit-0001")
     ).scalar_one()
-    assert landed == "KAFKA-19777", "the commit should have moved off the placeholder"
+    assert landed == "KAFKA-900011", "the commit should have moved off the placeholder"
 
 
 def test_end_to_end_ci_run_matches_by_head_sha(seeded_session):

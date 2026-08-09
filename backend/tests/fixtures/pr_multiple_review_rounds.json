@@ -1,8 +1,8 @@
 {
-  "number": 20337,
-  "title": "KAFKA-18220: tighten producer idempotence checks",
-  "body": "Follow-up to KAFKA-17999. See also KAFKA-12345 for context.",
-  "headRefName": "KAFKA-18220-idempotence",
+  "number": 900002,
+  "title": "KAFKA-900013: tighten producer idempotence checks",
+  "body": "Follow-up to KAFKA-900014. See also KAFKA-900015 for context.",
+  "headRefName": "KAFKA-900013-idempotence",
   "createdAt": "2026-04-01T08:00:00+00:00",
   "updatedAt": "2026-04-09T16:00:00+00:00",
   "mergedAt": "2026-04-09T15:45:00+00:00",

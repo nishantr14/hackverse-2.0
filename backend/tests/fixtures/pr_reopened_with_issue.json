@@ -1,5 +1,5 @@
 {
-  "number": 20500,
+  "number": 900004,
   "title": "Fix flaky consumer rebalance test",
   "body": "No ticket for this one; it closes the linked issue.",
   "headRefName": "flaky-rebalance-test",
@@ -15,7 +15,7 @@
   "author": { "__typename": "User", "is_bot": false, "actor_hash": "bbbbbbbbbbbbbbbb" },
   "files": { "nodes": [{ "path": "core/src/test/scala/integration/kafka/api/ConsumerBounceTest.scala" }] },
   "closingIssuesReferences": {
-    "nodes": [{ "number": 20455, "repository": { "nameWithOwner": "apache/kafka" } }]
+    "nodes": [{ "number": 900010, "repository": { "nameWithOwner": "apache/kafka" } }]
   },
   "milestone": { "title": "4.2.0" },
   "labels": { "nodes": [{ "name": "flaky-test" }, { "name": "tests" }] },

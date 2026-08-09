@@ -397,6 +397,7 @@ def map_pull_request(body: dict[str, Any], stats: Stats | None = None) -> Mapped
     merged = _ts(body.get("mergedAt"))
     closed = _ts(body.get("closedAt"))
     paths = [str(f.get("path")) for f in _nodes(body.get("files")) if f.get("path")]
+    merge_commit = (body.get("mergeCommit") or {}).get("oid")
 
     work_item = {
         "work_item_id": work_item_id,
@@ -489,13 +490,53 @@ def map_pull_request(body: dict[str, Any], stats: Stats | None = None) -> Mapped
     # --- the merge itself. No actor: see the module docstring.
     add("merged", merged, pr_ref, None, {"pr": pr_ref, "actor_basis": "not_fetched"})
 
+    # --- the PR's own commits (P2: squash-merge collapses trunk history to
+    # one commit; these are what session inference actually clusters on).
+    #
+    # event_id is byte-identical to git_local.event_id_for on the same
+    # (sha, authored_at) — not a coincidence, see event_id_for's docstring.
+    # A commit git_local already saw on trunk (a non-squash merge, or a PR
+    # whose branch commits survived) converges on that same id and the
+    # upsert's on_conflict_do_nothing leaves git_local's row untouched: no
+    # double-count. A commit squashed away before it ever reached trunk has
+    # no existing row to collide with and lands here for the first time.
+    for commit_node in _nodes(body.get("commits")):
+        commit = commit_node.get("commit") or {}
+        oid = commit.get("oid")
+        authored = _ts(commit.get("authoredDate"))
+        if not oid or authored is None:
+            continue
+        author = (commit.get("author") or {}).get("user")
+        if _is_bot(author):
+            dropped += 1
+            continue
+        events.append(
+            {
+                "event_id": event_id_for(
+                    GIT_SOURCE, "commit", str(oid), "commit", authored
+                ),
+                "work_item_id": work_item_id,
+                "actor_hash": _actor_hash(author),
+                "activity": "commit",
+                "ts": authored,
+                "source": EVENT_SOURCE,
+                "attrs": {
+                    "sha": oid,
+                    "pr": pr_ref,
+                    "additions": commit.get("additions"),
+                    "deletions": commit.get("deletions"),
+                    "changed_files": commit.get("changedFiles"),
+                    "is_squash_merge": bool(merge_commit) and oid == merge_commit,
+                },
+            }
+        )
+
     if stats is not None:
         stats.bot_events_dropped += dropped
         stats.unmapped_review_states.update(unmapped)
         if work_item["epic"]:
             stats.epics_found += 1
 
-    merge_commit = (body.get("mergeCommit") or {}).get("oid")
     return MappedPR(
         work_item=work_item,
         events=events,
