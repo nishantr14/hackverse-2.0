@@ -32,11 +32,13 @@ ROUTER_MODULES: tuple[str, ...] = ("spend", "waste", "process", "simulate")
 
 app = FastAPI(title="Engineering Spend Intelligence")
 
-# The Vite dev server. Credentials stay off — this API carries no session and
-# no cookie, and it must not start doing so.
+# The Vite dev server(s). Origins come from ALLOWED_ORIGINS (see config.py) so
+# a deployment reachable on a LAN/VPN IP just adds itself to the list instead
+# of needing a code change. Credentials stay off — this API carries no session
+# and no cookie, and it must not start doing so.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_origins=get_settings().allowed_origins_list,
     allow_credentials=False,
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],

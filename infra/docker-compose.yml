@@ -1,6 +1,15 @@
 # Engineering Spend Intelligence — one-command local stack.
 # Owner: shared infra. Phase: Tier 0 (hour-8 gate: this must boot clean).
 # Same command on Linux and Windows: `docker compose -f infra/docker-compose.yml up`
+# Or just run `./deploy.sh` from the repo root — it wraps this file.
+#
+# nginx is the only exposed port (5082). postgres/backend/frontend all bind
+# to the host's loopback only, so nothing else is reachable from the network.
+#
+# Reachable from another machine (LAN/VPN, e.g. a 172.x address)? Set HOST_IP
+# to that address so the backend's CORS allowlist includes it — "localhost"
+# resolves differently on every machine:
+#   HOST_IP=172.20.10.5 docker compose -f infra/docker-compose.yml up
 
 services:
   postgres:
@@ -10,7 +19,7 @@ services:
       POSTGRES_PASSWORD: esi
       POSTGRES_DB: esi
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ../docs/schema.sql:/docker-entrypoint-initdb.d/001_schema.sql:ro,z
@@ -30,8 +39,9 @@ services:
       ASF_JIRA_BASE_URL: https://issues.apache.org/jira
       K_ANONYMITY_FLOOR: "5"
       K_ANONYMITY_FALLBACK: "3"
+      ALLOWED_ORIGINS: "http://localhost:5173,http://127.0.0.1:5173,http://${HOST_IP:-localhost}:5173,http://localhost:5082,http://127.0.0.1:5082,http://${HOST_IP:-localhost}:5082"
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     depends_on:
       postgres:
         condition: service_healthy
@@ -43,13 +53,25 @@ services:
       context: ../frontend
       dockerfile: Dockerfile
     environment:
-      VITE_API_BASE_URL: http://localhost:8000
+      # Relative path, proxied by nginx to the backend — same-origin as the
+      # page itself, so it works from any address nginx is reached at.
+      VITE_API_BASE_URL: "/api"
     ports:
-      - "5173:5173"
+      - "127.0.0.1:5173:5173"
     depends_on:
       - backend
     volumes:
       - ../frontend/src:/app/src:z
+
+  nginx:
+    image: nginx:1.27-alpine
+    ports:
+      - "5082:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro,z
+    depends_on:
+      - backend
+      - frontend
 
 volumes:
   pgdata:
