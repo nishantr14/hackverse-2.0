@@ -11,6 +11,36 @@ from this file instead of re-deriving context.
 
 ---
 
+## Where the build actually is
+
+Read this before proposing work — most of it is already built, and the
+fastest way to waste an hour is to rebuild something that runs.
+
+**The demo runs end to end on real data.** Restored from a database dump, not
+ingested locally. Full instructions: [`SETUP-FROM-DUMP.md`](../SETUP-FROM-DUMP.md).
+
+| | State |
+|---|---|
+| Data | 136,201 events · 122,888 raw payloads · 111,146 cost rows · 5,400 work items · 1,725 actors |
+| Reference figure | `GET /spend/summary` → `totalCost` **84,777,933**. If yours differs, your database is wrong — stop and fix that first. |
+| Live routes | `/health` `/meta` `/spend` `/spend/summary` `/process/map` `/waste/*` `/simulate` `/simulate/components` |
+| Screens | Process · Spend · Waste · Simulator all read the real backend. Workforce reads a fixture (see below). |
+
+Two processes, both required:
+
+```
+cd backend  && PYTHONPATH=. python -m uvicorn app.main:app --port 8000
+cd frontend && npm run dev
+```
+
+**Models are baselines, and say so.** `models/forecaster.py` is empirical
+quantiles over `v_cycle_time`, NOT the LightGBM model in the playbook.
+`models/capability_index.py` is a weighted count, not a model. Both carry a
+`basis` string on every response and the UI must render it. Do not describe
+either as trained on stage.
+
+---
+
 ## Locked decisions — do not re-litigate mid-build
 
 | # | Decision | Why |
@@ -29,6 +59,9 @@ from this file instead of re-deriving context.
 | 12 | **k-anonymity enforced in VIEWS, not application code** | Default k=5, fallback k=3, printed on screen when it triggers. The app role reads views only. |
 | 13 | **Never use lines of code as an effort proxy** | Session inference over timestamps. LoC is discredited and a judge will say so. |
 | 14 | **`merged` not `merge`. `approved` not `approve`.** | One spelling, decided. |
+| 15 | **Restore the dump. Never re-run ingestion.** | Ingestion takes ~40 minutes, needs a token, and hits the ASF's servers for data we already have. Nishant's lane only. |
+| 16 | **`PSEUDONYMIZATION_SALT` stays `change-me`** | Every hash in the dump was built with it. Logins are hashed before they are written, so there is nothing on disk to re-hash from — change the salt and your hashes disagree with everyone else's, permanently. |
+| 17 | **Workforce data is a SEPARATE layer and is never joined to the event log** | The analytics layer is observed and pseudonymised. Workforce is volunteered and names people. See the privacy section. |
 
 ---
 
@@ -73,6 +106,27 @@ summarises into a number itself.
 - Any feature knowable only after a work item finished is banned from any
   model. Time-based splits only; a random split leaks the future.
 
+### The workforce layer — the one place people are named
+
+`/workforce` names people. Everything above does not. Both statements have to
+stay true, so the boundary is explicit:
+
+- Workforce data is **volunteered** — a preference form the employee filled in
+  and a resume they supplied. The analytics layer is **observed** telemetry
+  they never opted into. Different consent basis, different rules.
+- **The two are never joined.** `EmployeePreferences.employeeId` has nothing to
+  do with `actor_hash`, and no type carries both. Joining them turns an
+  anonymous cost figure into a per-person one and breaks the claim the product
+  makes on screen.
+- The sidebar privacy note is **per route**. "No per-person view anywhere" is
+  printed on the analytics screens and would be a visible lie on Workforce, so
+  each surface states its own basis. Do not restore a single global note.
+- Outputs are **recommendations a human reviews**, never assignments. No
+  control on that screen commits anything.
+- Nothing in `capability_index.py` may reach an API response at actor
+  granularity. Its two consumers are the simulator's ramp-up factor and the
+  key-person detector — both aggregate.
+
 ---
 
 ## Land raw, then map
@@ -90,6 +144,19 @@ Canonical copy: [`docs/schema.sql`](../docs/schema.sql). Requires all four
 teammates present to change. If a task appears to need a schema change, **stop
 and tell me** rather than changing it and continuing.
 
+Because it is frozen, **everything added after it lives in
+`backend/migrations/`** — the canonical event log, the append-only triggers,
+and every process / waste / spend / simulate view. They are applied only by:
+
+```bash
+cd backend && PYTHONPATH=. python -m app.db.migrate
+```
+
+Idempotent, so run it after every pull. **Skipping it is the single most
+common failure:** the database looks completely healthy while seven API routes
+return 500 against views that were never created. If a route 500s, check this
+before anything else.
+
 ---
 
 ## Ownership — do not edit outside your lane
@@ -104,7 +171,12 @@ and tell me** rather than changing it and continuing.
 | `backend/app/cost/`, `waste/`, `synthetic/`, `sql/views/` | Diljit |
 | `backend/app/api/` | the owner of the lane behind each router |
 | `frontend/` | Livana |
-| `docs/schema.sql`, `infra/`, `.env.example` | Shared — announce before touching |
+| `backend/migrations/` | the owner of the lane the migration serves |
+| `docs/schema.sql`, `infra/`, `.env.example`, this file | Shared — announce before touching |
+
+`frontend/src/data/api.ts` is the **only** file that knows a URL, and
+`frontend/src/data/types.ts` is the frontend↔backend contract. A screen that
+fetches directly, or a component that imports a fixture, is a bug.
 
 If a task appears to require editing outside your lane, stop and tell me.
 
