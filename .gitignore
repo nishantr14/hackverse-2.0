@@ -22,6 +22,7 @@ Thumbs.db
 # Editors
 .vscode/
 .idea/
+.claude/settings.local.json
 
 # Data
 # The identity DB holds the ONLY login -> actor_hash mapping in the system.

@@ -1,0 +1,27 @@
+{
+  "number": 20600,
+  "title": "KAFKA-19777: correct offset fetch on empty partition",
+  "body": "The squashed commit subject carried no ticket key, so git_local filed it under a provisional case.",
+  "headRefName": "offset-fetch-empty",
+  "createdAt": "2026-07-01T09:00:00+00:00",
+  "updatedAt": "2026-07-05T09:00:00+00:00",
+  "mergedAt": "2026-07-05T08:30:00+00:00",
+  "closedAt": "2026-07-05T08:30:00+00:00",
+  "changedFiles": 1,
+  "additions": 20,
+  "deletions": 2,
+  "repo": "apache/kafka",
+  "mergeCommit": { "oid": "5555555555555555555555555555555555555555" },
+  "author": { "__typename": "User", "is_bot": false, "actor_hash": "aaaaaaaaaaaaaaaa" },
+  "files": { "nodes": [{ "path": "core/src/main/scala/kafka/server/KafkaApis.scala" }] },
+  "reviews": {
+    "nodes": [
+      {
+        "state": "APPROVED",
+        "submittedAt": "2026-07-04T12:00:00+00:00",
+        "author": { "__typename": "User", "is_bot": false, "actor_hash": "bbbbbbbbbbbbbbbb" }
+      }
+    ]
+  },
+  "timelineItems": { "nodes": [] }
+}

@@ -1,0 +1,76 @@
+{
+  "number": 20337,
+  "title": "KAFKA-18220: tighten producer idempotence checks",
+  "body": "Follow-up to KAFKA-17999. See also KAFKA-12345 for context.",
+  "headRefName": "KAFKA-18220-idempotence",
+  "createdAt": "2026-04-01T08:00:00+00:00",
+  "updatedAt": "2026-04-09T16:00:00+00:00",
+  "mergedAt": "2026-04-09T15:45:00+00:00",
+  "closedAt": "2026-04-09T15:45:00+00:00",
+  "changedFiles": 5,
+  "additions": 210,
+  "deletions": 44,
+  "repo": "apache/kafka",
+  "mergeCommit": { "oid": "2222222222222222222222222222222222222222" },
+  "author": { "__typename": "User", "is_bot": false, "actor_hash": "aaaaaaaaaaaaaaaa" },
+  "files": {
+    "nodes": [
+      { "path": "clients/src/main/java/org/apache/kafka/clients/producer/Producer.java" },
+      { "path": "clients/src/test/java/org/apache/kafka/clients/producer/ProducerTest.java" },
+      { "path": "clients/src/main/java/org/apache/kafka/clients/producer/internals/Sender.java" },
+      { "path": "core/src/test/scala/unit/kafka/server/ProduceRequestTest.scala" },
+      { "path": "README.md" }
+    ]
+  },
+  "reviews": {
+    "nodes": [
+      {
+        "state": "COMMENTED",
+        "submittedAt": "2026-04-02T09:00:00+00:00",
+        "author": { "__typename": "User", "is_bot": false, "actor_hash": "bbbbbbbbbbbbbbbb" }
+      },
+      {
+        "state": "CHANGES_REQUESTED",
+        "submittedAt": "2026-04-03T14:00:00+00:00",
+        "author": { "__typename": "User", "is_bot": false, "actor_hash": "bbbbbbbbbbbbbbbb" }
+      },
+      {
+        "state": "APPROVED",
+        "submittedAt": "2026-04-09T12:00:00+00:00",
+        "author": { "__typename": "User", "is_bot": false, "actor_hash": "bbbbbbbbbbbbbbbb" }
+      },
+      {
+        "state": "APPROVED",
+        "submittedAt": "2026-04-09T12:00:00+00:00",
+        "author": { "__typename": "User", "is_bot": false, "actor_hash": "cccccccccccccccc" }
+      },
+      {
+        "state": "DISMISSED",
+        "submittedAt": "2026-04-09T12:30:00+00:00",
+        "author": { "__typename": "User", "is_bot": false, "actor_hash": "cccccccccccccccc" }
+      }
+    ]
+  },
+  "timelineItems": {
+    "nodes": [
+      {
+        "__typename": "ReviewRequestedEvent",
+        "createdAt": "2026-04-01T08:05:00+00:00",
+        "actor": { "__typename": "User", "is_bot": false, "actor_hash": "aaaaaaaaaaaaaaaa" },
+        "requestedReviewer": { "__typename": null, "is_bot": false, "actor_hash": "bbbbbbbbbbbbbbbb" }
+      },
+      {
+        "__typename": "ReviewRequestedEvent",
+        "createdAt": "2026-04-01T08:05:00+00:00",
+        "actor": { "__typename": "User", "is_bot": false, "actor_hash": "aaaaaaaaaaaaaaaa" },
+        "requestedReviewer": { "__typename": null, "is_bot": false, "actor_hash": "cccccccccccccccc" }
+      },
+      {
+        "__typename": "ReviewRequestedEvent",
+        "createdAt": "2026-04-01T08:05:00+00:00",
+        "actor": { "__typename": "User", "is_bot": false, "actor_hash": "aaaaaaaaaaaaaaaa" },
+        "requestedReviewer": { "slug": "kafka-committers" }
+      }
+    ]
+  }
+}

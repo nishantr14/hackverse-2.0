@@ -1,0 +1,56 @@
+{
+  "number": 20401,
+  "title": "KAFKA-19001: rework metadata snapshot loader",
+  "body": "Rebased twice after review.",
+  "headRefName": "KAFKA-19001-snapshot",
+  "createdAt": "2026-05-01T10:00:00+00:00",
+  "updatedAt": "2026-05-12T09:00:00+00:00",
+  "mergedAt": null,
+  "closedAt": null,
+  "changedFiles": 3,
+  "additions": 88,
+  "deletions": 12,
+  "repo": "apache/kafka",
+  "mergeCommit": null,
+  "author": { "__typename": "User", "is_bot": false, "actor_hash": "cccccccccccccccc" },
+  "files": {
+    "nodes": [
+      { "path": "metadata/src/main/java/org/apache/kafka/metadata/SnapshotLoader.java" },
+      { "path": "metadata/src/test/java/org/apache/kafka/metadata/SnapshotLoaderTest.java" },
+      { "path": "raft/src/main/java/org/apache/kafka/raft/RaftClient.java" }
+    ]
+  },
+  "reviews": {
+    "nodes": [
+      {
+        "state": "COMMENTED",
+        "submittedAt": "2026-05-02T11:00:00+00:00",
+        "author": { "__typename": "Bot", "is_bot": true }
+      },
+      {
+        "state": "CHANGES_REQUESTED",
+        "submittedAt": "2026-05-03T11:00:00+00:00",
+        "author": { "__typename": "User", "is_bot": false, "actor_hash": "aaaaaaaaaaaaaaaa" }
+      }
+    ]
+  },
+  "timelineItems": {
+    "nodes": [
+      {
+        "__typename": "HeadRefForcePushedEvent",
+        "createdAt": "2026-05-04T08:00:00+00:00",
+        "actor": { "__typename": "User", "is_bot": false, "actor_hash": "cccccccccccccccc" }
+      },
+      {
+        "__typename": "HeadRefForcePushedEvent",
+        "createdAt": "2026-05-06T08:00:00+00:00",
+        "actor": { "__typename": "User", "is_bot": false, "actor_hash": "cccccccccccccccc" }
+      },
+      {
+        "__typename": "HeadRefForcePushedEvent",
+        "createdAt": "2026-05-07T08:00:00+00:00",
+        "actor": { "__typename": "Bot", "is_bot": true }
+      }
+    ]
+  }
+}

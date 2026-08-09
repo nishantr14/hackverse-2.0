@@ -1,0 +1,9 @@
+{
+  "id": 987654321,
+  "repo": "apache/kafka",
+  "head_sha": "5555555555555555555555555555555555555555",
+  "run_started_at": "2026-07-05T08:00:00+00:00",
+  "updated_at": "2026-07-05T08:42:00+00:00",
+  "conclusion": "success",
+  "run_attempt": 1
+}
