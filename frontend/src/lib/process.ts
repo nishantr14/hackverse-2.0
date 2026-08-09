@@ -124,53 +124,57 @@ export const VARIANT_MEANING: Record<string, string> = {
    renders, which a force layout is not.
    --------------------------------------------------------------------------- */
 
-export const CANVAS = { w: 1280, h: 560 };
-export const NODE = { w: 156, h: 68 };
+export const CANVAS = { w: 1680, h: 620 };
+export const NODE = { w: 150, h: 66 };
 
 /**
- * Four lanes, because the real log has four kinds of activity and mixing
- * them into one spine made the picture lie about what follows what.
+ * ONE SPINE, not two lanes.
  *
- *   TICKET_Y   Jira lifecycle — where work is tracked
- *   DETOUR_Y   the ways work goes backwards
- *   SPINE_Y    the git/PR main line, left to right
- *   MACHINE_Y  things no human did (CI) and modelled time (meetings)
+ * The ticket lifecycle and the git/PR flow were drawn as separate rows,
+ * which was tidy and wrong: they are the same process. A ticket is created,
+ * someone commits against it, it is reviewed, merged, and then the ticket is
+ * resolved. Splitting that across two rows meant its busiest links —
+ * ticket_created → review, merged → ticket_resolved, commit →
+ * ticket_resolved — became long diagonals cutting across everything, and
+ * one of them ran straight through the Changes Requested box.
+ *
+ * Laid out end to end instead, the real process reads left to right in one
+ * line, and the only things off the spine are the two ways work goes
+ * backwards (DETOUR_Y, above) and activities nobody performs (BELOW_Y).
  *
  * The fixture had five hand-placed nodes and used `merge`. The canonical
- * vocabulary is seventeen activities and the spelling is `merged` — locked
- * decision #14. A node id that is not in this map used to crash the whole
- * screen on `NODE_POS[id].cx`; posFor() below makes that impossible.
+ * spelling is `merged` — locked decision #14. A node id that is not in this
+ * map used to crash the whole screen on `NODE_POS[id].cx`; posFor() below
+ * makes that impossible.
  */
-const TICKET_Y = 70;
-const DETOUR_Y = 210;
-const SPINE_Y = 350;
-const MACHINE_Y = 490;
+const DETOUR_Y = 180;
+const SPINE_Y = 380;
+const BELOW_Y = 560;
 
 export const NODE_POS: Record<string, { cx: number; cy: number }> = {
-  // Jira lifecycle
-  ticket_created: { cx: 120, cy: TICKET_Y },
-  ticket_started: { cx: 340, cy: TICKET_Y },
-  ticket_in_review: { cx: 560, cy: TICKET_Y },
-  ticket_resolved: { cx: 780, cy: TICKET_Y },
-  ticket_closed: { cx: 1000, cy: TICKET_Y },
-  ticket_reopened: { cx: 1190, cy: TICKET_Y },
+  // The process, end to end, in the order it happens.
+  ticket_created: { cx: 90, cy: SPINE_Y },
+  ticket_started: { cx: 300, cy: SPINE_Y },
+  commit: { cx: 510, cy: SPINE_Y },
+  review_requested: { cx: 720, cy: SPINE_Y },
+  review: { cx: 930, cy: SPINE_Y },
+  approved: { cx: 1140, cy: SPINE_Y },
+  merged: { cx: 1350, cy: SPINE_Y },
+  ticket_resolved: { cx: 1560, cy: SPINE_Y },
 
-  // Going backwards
-  force_push: { cx: 300, cy: DETOUR_Y },
-  changes_requested: { cx: 500, cy: DETOUR_Y },
-  reopened: { cx: 700, cy: DETOUR_Y },
+  // Going backwards, above the line, each sitting over the step it returns to.
+  ticket_in_review: { cx: 405, cy: DETOUR_Y },
+  force_push: { cx: 825, cy: DETOUR_Y },
+  changes_requested: { cx: 1035, cy: DETOUR_Y },
+  reopened: { cx: 1245, cy: DETOUR_Y },
+  ticket_closed: { cx: 1455, cy: DETOUR_Y },
 
-  // The main line
-  commit: { cx: 100, cy: SPINE_Y },
-  review_requested: { cx: 300, cy: SPINE_Y },
-  review: { cx: 500, cy: SPINE_Y },
-  approved: { cx: 700, cy: SPINE_Y },
-  merged: { cx: 900, cy: SPINE_Y },
-  deploy: { cx: 1100, cy: SPINE_Y },
-
-  // Not a person
-  ci_run: { cx: 400, cy: MACHINE_Y },
-  meeting: { cx: 800, cy: MACHINE_Y },
+  // Not a step anyone performs. Absent from the default view, so the space
+  // under the spine stays free for the skip-arcs drawn there.
+  ci_run: { cx: 405, cy: BELOW_Y },
+  deploy: { cx: 1245, cy: BELOW_Y },
+  meeting: { cx: 825, cy: BELOW_Y },
+  ticket_reopened: { cx: 1455, cy: BELOW_Y },
 };
 
 /**
@@ -188,7 +192,7 @@ export function posFor(id: string): { cx: number; cy: number } {
   let hash = 0;
   for (let i = 0; i < id.length; i += 1) hash = (hash * 31 + id.charCodeAt(i)) | 0;
   const slot = Math.abs(hash) % 6;
-  return { cx: 180 + slot * 190, cy: MACHINE_Y + 90 };
+  return { cx: 240 + slot * 240, cy: BELOW_Y };
 }
 
 export interface DrawnEdge {
@@ -245,6 +249,39 @@ function anchor(from: string, to: string) {
 }
 
 /**
+ * How many node boxes a straight line between these two would plough through.
+ *
+ * `commit -> merged` is drawn along the spine, and the spine also holds
+ * review_requested, review and approved between them — so the straight line
+ * ran through all three boxes, which read as an edge touching five nodes
+ * rather than one edge skipping three.
+ */
+function nodesBetween(from: string, to: string): number {
+  const a = posFor(from);
+  const b = posFor(to);
+  const others = Object.entries(NODE_POS).filter(([id]) => id !== from && id !== to);
+
+  // Walk the segment and count boxes it lands inside. Sampling rather than
+  // analytic intersection because it is obviously correct at a glance and
+  // the geometry here is tens of segments, not thousands — an earlier
+  // same-row-only test missed commit -> ticket_resolved, a long diagonal
+  // that ran straight through the Changes Requested box.
+  const hw = NODE.w / 2;
+  const hh = NODE.h / 2;
+  const hit = new Set<string>();
+  const STEPS = 48;
+  for (let i = 1; i < STEPS; i += 1) {
+    const t = i / STEPS;
+    const x = a.cx + (b.cx - a.cx) * t;
+    const y = a.cy + (b.cy - a.cy) * t;
+    for (const [id, p] of others) {
+      if (Math.abs(x - p.cx) < hw && Math.abs(y - p.cy) < hh) hit.add(id);
+    }
+  }
+  return hit.size;
+}
+
+/**
  * Lays out one line per transition.
  *
  * Parallel edges are merged. Three variants record a review → changes
@@ -298,13 +335,44 @@ export function drawEdges(graph: ProcessGraph, variant: string | null): DrawnEdg
   const shown = aggregate(variant ? graph.edges.filter((e) => e.variant === variant) : graph.edges);
 
   return shown.map(({ shares, ...edge }) => {
-    const a = anchor(edge.from, edge.to);
-    const b = anchor(edge.to, edge.from);
-    const straight = edge.from !== 'changes_requested' && edge.to !== 'changes_requested';
+    const skipped = nodesBetween(edge.from, edge.to);
+    const isDetour = edge.from === 'changes_requested' || edge.to === 'changes_requested';
 
-    const { path, label } = straight
-      ? { path: `M ${a.x} ${a.y} L ${b.x} ${b.y}`, label: { x: (a.x + b.x) / 2, y: a.y } }
-      : bow(a.x, a.y, b.x, b.y, 52);
+    let a = anchor(edge.from, edge.to);
+    let b = anchor(edge.to, edge.from);
+    let path: string;
+    let label: { x: number; y: number };
+
+    if (skipped > 0) {
+      /**
+       * A skip leaves through the BOTTOM face and arcs under the spine.
+       *
+       * Bowing a spine-to-spine line was not enough on its own: a quadratic
+       * hugs its endpoints, so `commit → merged` still clipped the first box
+       * it passed even with a deep bow. Leaving downwards means it is clear
+       * of the row from the first pixel.
+       *
+       * Depth grows with how many boxes are skipped, and returns swing
+       * deeper than advances, so a pair like commit → merged and
+       * merged → commit never sit on top of each other.
+       */
+      const from = posFor(edge.from);
+      const to = posFor(edge.to);
+      const forward = to.cx > from.cx;
+      const depth = forward ? 50 + skipped * 16 : 100 + skipped * 28;
+
+      a = { x: from.cx, y: from.cy + NODE.h / 2 + 4 };
+      b = { x: to.cx, y: to.cy + NODE.h / 2 + 4 };
+      const mx = (a.x + b.x) / 2;
+      const control = Math.max(a.y, b.y) + 2 * depth;
+      path = `M ${a.x} ${a.y} Q ${mx} ${control} ${b.x} ${b.y}`;
+      label = { x: mx, y: (a.y + b.y) / 2 + depth };
+    } else if (isDetour) {
+      ({ path, label } = bow(a.x, a.y, b.x, b.y, 52));
+    } else {
+      path = `M ${a.x} ${a.y} L ${b.x} ${b.y}`;
+      label = { x: (a.x + b.x) / 2, y: a.y };
+    }
 
     return {
       key: `${edge.from}->${edge.to}`,

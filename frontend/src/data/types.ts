@@ -63,10 +63,25 @@ export interface VariantSummary {
   shareOfCost: number;
 }
 
+/**
+ * What the map is NOT showing, so the filtering can be stated on screen
+ * rather than hidden. 168 transitions drawn at once is a hairball in which
+ * nothing is legible; the top 20 by cost carry ~81% of the money.
+ */
+export interface ProcessCoverage {
+  transitionsShown: number;
+  transitionsTotal: number;
+  /** 0–1 share of total transition cost that the drawn edges represent. */
+  costShare: number;
+  meetingsExcluded: boolean;
+  note: string | null;
+}
+
 export interface ProcessGraph {
   nodes: ProcessNode[];
   edges: ProcessEdge[];
   variantSummary: VariantSummary[];
+  coverage?: ProcessCoverage;
 }
 
 export interface SimulatorInput {

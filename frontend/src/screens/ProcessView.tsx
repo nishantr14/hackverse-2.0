@@ -197,6 +197,19 @@ export function ProcessView() {
                   onActiveEdge={setActiveEdge}
                 />
               </div>
+              {/* Say what is off screen. A filtered map that does not admit
+                  it is filtered is just a wrong map. */}
+              {data.coverage && (
+                <p className="mt-5 border-t pt-4 text-[12px] leading-relaxed text-[var(--text-secondary)]"
+                   style={{ borderColor: 'var(--border)' }}>
+                  Showing the {data.coverage.transitionsShown} costliest of{' '}
+                  {data.coverage.transitionsTotal} transitions —{' '}
+                  <strong className="text-[var(--text-primary)]">
+                    {Math.round(data.coverage.costShare * 100)}% of all transition cost
+                  </strong>
+                  . {data.coverage.note}
+                </p>
+              )}
             </GlassCard>
 
             {/* supporting detail — the same three routes as numbers, so the

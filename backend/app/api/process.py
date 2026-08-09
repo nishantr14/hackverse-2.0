@@ -51,12 +51,30 @@ def get_graph(repo: str | None = None, session: Session = Depends(get_read_sessi
     }
 
 
+#: Activities that are not steps in the software process.
+#:
+#: A meeting is modelled, and it is placed in the timeline by wall clock, so
+#: it lands between whatever two real events happened to bracket it. That
+#: produces a transition into and out of every activity in the log — and
+#: because those transitions are numerous, `review -> meeting` and
+#: `meeting -> review` came out as the two most expensive transitions in the
+#: whole process, carrying 15% of all cost between them.
+#:
+#: They are an artifact of interleaving, not a pattern anyone can act on.
+#: Meeting cost is real output and is reported on Spend and Waste; it is the
+#: claim that meetings are a STEP that does not hold. Pass
+#: include_meetings=true to see them anyway.
+NON_PROCESS_ACTIVITIES: tuple[str, ...] = ("meeting",)
+
 MAP_EDGES_SQL = """
 SELECT source_activity, target_activity, variant_class,
        SUM(n_transitions) AS frequency, SUM(cost_rupees) AS cost_rupees
 FROM v_edges_by_variant
 -- Cast: Postgres cannot infer a bare NULL parameter's type.
 WHERE (CAST(:repo AS TEXT) IS NULL OR repo = CAST(:repo AS TEXT))
+  AND (CAST(:keep_all AS BOOLEAN)
+       OR (NOT source_activity = ANY(:excluded)
+           AND NOT target_activity = ANY(:excluded)))
 GROUP BY 1, 2, 3
 ORDER BY 5 DESC
 """
@@ -69,17 +87,51 @@ ORDER BY share_of_cost DESC
 
 
 @router.get("/map")
-def get_map(repo: str | None = None, session: Session = Depends(get_read_session)):
+def get_map(
+    repo: str | None = None,
+    limit: int = 20,
+    include_meetings: bool = False,
+    session: Session = Depends(get_read_session),
+):
     """The graph collapsed into the three semantic variant classes.
 
     This is the drawable form. /graph and /variants stay as they are — the
     true per-sequence variants are the honest process-mining answer, and
     there are thousands of them, which is exactly why they cannot be a
     picture. See migrations/006 for how a case is classified.
+
+    FILTERED BY COST, AND IT SAYS SO. Fifteen activities produce 168 distinct
+    transitions; drawn all at once they are a hairball in which nothing is
+    legible and therefore nothing is true. The top 20 by cost carry ~81% of
+    the money across 10 activities, which is a map someone can read and act
+    on. `coverage` reports exactly what share is on screen so the filtering
+    is stated rather than hidden, and `limit` raises it.
     """
-    edges = session.execute(text(MAP_EDGES_SQL), {"repo": repo}).all()
+    params = {
+        "repo": repo,
+        "keep_all": include_meetings,
+        "excluded": list(NON_PROCESS_ACTIVITIES),
+    }
+    all_edges = session.execute(text(MAP_EDGES_SQL), params).all()
     summary = session.execute(text(MAP_SUMMARY_SQL)).all()
 
+    # Rank by the transition's total cost across variants, so a transition is
+    # never half-drawn — keeping one variant's slice of an edge while
+    # dropping another would misattribute the line's colour.
+    by_transition: dict[tuple[str, str], float] = {}
+    for e in all_edges:
+        by_transition[(e[0], e[1])] = by_transition.get((e[0], e[1]), 0.0) + float(
+            e[4] or 0
+        )
+    ranked = sorted(by_transition, key=lambda k: by_transition[k], reverse=True)
+    kept = set(ranked[:limit])
+
+    edges = [e for e in all_edges if (e[0], e[1]) in kept]
+    total_cost = sum(by_transition.values())
+    shown_cost = sum(by_transition[k] for k in kept)
+
+    # Only nodes that survived. An activity floating with no edges is a box
+    # the eye has to rule out, which is a cost with no information behind it.
     nodes = sorted({e[0] for e in edges} | {e[1] for e in edges})
     return {
         "nodes": [{"id": n, "label": n.replace("_", " ").title()} for n in nodes],
@@ -93,6 +145,20 @@ def get_map(repo: str | None = None, session: Session = Depends(get_read_session
             }
             for e in edges
         ],
+        "coverage": {
+            "transitionsShown": len(kept),
+            "transitionsTotal": len(by_transition),
+            "costShare": shown_cost / total_cost if total_cost else 0.0,
+            "meetingsExcluded": not include_meetings,
+            "note": (
+                "Meetings are modelled and placed by wall clock, so they land "
+                "between whichever two real events bracket them and appear to "
+                "follow everything. They are priced on Spend and Waste; they "
+                "are not a step here."
+            )
+            if not include_meetings
+            else None,
+        },
         "variantSummary": [
             {
                 "variant": s[0],
