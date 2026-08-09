@@ -65,13 +65,25 @@ def detect(session: Session) -> tuple[WasteFinding, list[BacklogSegment]]:
                 )
             )
 
+    # No qualifying cases is a real answer, not an error: it means nothing in
+    # the window has both a Jira ticket and a first commit. statistics.median
+    # raises on an empty list and _percentile would IndexError, so the summary
+    # is built without them rather than the route 500ing. Says n=0 out loud —
+    # an absent measurement, never a zero-hour backlog dressed up as observed.
+    if hours:
+        distribution = (
+            f"median={statistics.median(hours):.1f}h, p90={_percentile(hours, 0.9):.1f}h. "
+        )
+    else:
+        distribution = "no median or p90 — no case has both a Jira ticket and a first commit. "
+
     finding = WasteFinding(
         detector="backlog_time",
         hours=sum(hours),
         cost=None,
         unit_note=(
             f"n={len(hours):,} cases with Jira + a first commit. "
-            f"median={statistics.median(hours):.1f}h, p90={_percentile(hours, 0.9):.1f}h. "
+            f"{distribution}"
             "Work sitting still, costing nothing, delaying everything — "
             "not priced, deliberately: idle time has no labour cost by "
             "construction."
