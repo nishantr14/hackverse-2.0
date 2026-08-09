@@ -28,7 +28,13 @@ logger = logging.getLogger(__name__)
 
 #: Mount order is display order in /docs. Owners: spend=Diljit, waste=Diljit,
 #: process=Diljit, simulate=Dipen.
-ROUTER_MODULES: tuple[str, ...] = ("spend", "waste", "process", "simulate")
+ROUTER_MODULES: tuple[str, ...] = (
+    "spend",
+    "waste",
+    "process",
+    "simulate",
+    "workforce",
+)
 
 app = FastAPI(title="Engineering Spend Intelligence")
 

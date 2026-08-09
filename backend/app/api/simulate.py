@@ -31,9 +31,21 @@ router = APIRouter(prefix="/simulate", tags=["simulate"])
 
 
 class ScenarioRequest(BaseModel):
+    """Additive. The three original fields are unchanged and still required,
+    so every existing caller keeps working and gets the response it always
+    got — the named block only appears when `namedRecommendations` is set."""
+
     source_project: str = Field(alias="sourceProject")
     dest_project: str = Field(alias="destProject")
     engineer_count: int = Field(alias="engineerCount", ge=1, le=200)
+
+    #: Opt in to the workforce layer. Default False keeps capacity mode — the
+    #: anonymous simulator — as the behaviour of an unchanged request.
+    named_recommendations: bool = Field(
+        default=False, alias="namedRecommendations"
+    )
+    shift: str = Field(default="flexible", alias="shift")
+    availability: list[str] | None = Field(default=None, alias="availability")
 
     model_config = {"populate_by_name": True}
 
@@ -82,7 +94,7 @@ def post_scenario(
         # 422, not 500: the request was well formed, the data cannot answer it.
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    return {
+    payload = {
         "sourceDeltaWeeks": result.source_delta_weeks,
         "destDeltaWeeks": result.dest_delta_weeks,
         "netCostRupees": result.net_cost_rupees,
@@ -94,4 +106,25 @@ def post_scenario(
         "priced": result.priced,
         "priceNote": result.price_note,
         "assumptions": result.assumptions,
+        "mode": "named" if body.named_recommendations else "capacity",
     }
+    if not body.named_recommendations:
+        return payload
+
+    # The workforce layer is imported here, not at module scope, so the
+    # simulator keeps working if that package is absent or broken. Capacity
+    # mode must never fail because the named layer did.
+    from app.api.workforce import RecommendRequest, build_recommendations
+
+    payload["workforce"] = build_recommendations(
+        RecommendRequest(
+            component=body.dest_project,
+            engineerCount=body.engineer_count,
+            shift=body.shift,
+            availability=body.availability,
+            # Any source != destination move is cross-team by definition, so
+            # somebody who opted out of that is excluded rather than ranked.
+            crossTeam=True,
+        )
+    )
+    return payload
