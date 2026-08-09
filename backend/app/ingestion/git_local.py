@@ -53,12 +53,14 @@ from sqlalchemy.orm import Session
 from app.config import REPO_ROOT, get_settings
 from app.db.models import Actor, EventLog, RawPayload, WorkItem
 from app.db.session import write_session
+from app.ingestion.projects import is_real_ticket
 from app.ingestion.pseudonymize import (
     IdentityStore,
     actor_hash,
     assert_no_identity,
     identity_store,
     is_bot,
+    warn_if_default_salt,
 )
 
 logger = logging.getLogger(__name__)
@@ -379,7 +381,10 @@ def work_item_id_for(commit: Commit, repo: str) -> tuple[str, str]:
     so the imprecision is bounded and visible in the run report.
     """
     key = commit.ticket_key
-    if key:
+    # `KIP-909:` and `CVE-2026-...` open commit subjects here exactly as often
+    # as `KAFKA-19871:` does, and neither is an issue. Unfiltered they created
+    # 63 phantom cases. See ingestion.projects.is_real_ticket.
+    if key and is_real_ticket(key, repo):
         return key, "ticket_key"
     pr = commit.pr_number
     if pr:
@@ -688,6 +693,7 @@ def _print_report(repo: str, stats: Stats, sprints: int) -> None:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    warn_if_default_salt()
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     settings = get_settings()
 

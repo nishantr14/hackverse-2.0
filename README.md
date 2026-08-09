@@ -138,6 +138,44 @@ outside `backend/app/ingestion/` may do either — a test enforces it.
 
 Or, inside Claude Code, use `/seed-synthetic` for the synthetic half.
 
+## Building the canonical event log
+
+Ingestion lands payloads. This turns them into the one event log everything
+else reads. It touches no network, so it is safe to re-run as often as you
+like — every event id is a hash of its own evidence, so a second pass upserts
+in place rather than doubling the log.
+
+```bash
+.venv/bin/python -m app.normalise.event_log
+```
+
+It applies `migrations/002_canonical_event_log.sql` itself, then prints the
+fourteen-item verification report. `--verify` prints the report without
+rebuilding.
+
+**Read `v_event_log`, not the base tables.** It is the log in the shape a
+process-mining tool expects, with the case attributes already joined on:
+
+| column | meaning |
+|---|---|
+| `case_id` | the work item — a Jira key, else `owner/name#pr`, else `owner/name@sha12` |
+| `activity` | one of the seventeen canonical activities, nothing else |
+| `ts` | the original source timestamp, UTC. Author date for a commit, never the commit date; `createdAt` for a PR event, never `updatedAt` |
+| `resource` | `actor_hash`. NULL for CI and for bots, always with `attrs.actor_absent` saying which |
+| `repo`, `component`, `sprint`, `case_source`, `jira_key` | case attributes |
+| `ingest_source` | `git_local` / `github_graphql` / `github_actions` / `asf_jira` |
+| `in_window` | false for events retained from before `HISTORY_MONTHS` to complete a case history |
+| `step` | 1..n, ordered by `(ts, event_id)` — a deterministic case sequence |
+
+`v_case_evidence` answers "which sources proved something about this case"
+(`has_git`, `has_pr`, `has_ci`, `has_jira`) so nobody re-derives that join
+four times and gets four different numbers. `v_case_sequence` — the variant
+key — is in the frozen schema and unchanged.
+
+Unattributable CI runs keep a NULL `work_item_id` in `ci_run` and are counted
+in the report. They cannot appear in `event_log`, whose `work_item_id` is NOT
+NULL.
+
 ## Running the app
 
 **Docker:** `docker compose -f infra/docker-compose.yml up` runs both.

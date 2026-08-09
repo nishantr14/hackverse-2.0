@@ -1,0 +1,64 @@
+{
+  "projects": ["Payments", "Delta", "Auth", "Internal", "Platform"],
+
+  "scenarios": [
+    {
+      "input": {
+        "sourceProject": "Delta",
+        "destProject": "Payments",
+        "engineerCount": 2
+      },
+      "output": {
+        "sourceDeltaWeeks": 5,
+        "destDeltaWeeks": -3,
+        "netCostRupees": 820000,
+        "confidenceLow": 55,
+        "confidenceHigh": 85,
+        "confidencePercent": 70,
+        "rampUpPenaltyApplied": true,
+        "rampUpNote": "Limited evidenced experience in checkout-service — adjustment applied to destination timeline."
+      }
+    },
+    {
+      "input": {
+        "sourceProject": "Internal",
+        "destProject": "Auth",
+        "engineerCount": 1
+      },
+      "output": {
+        "sourceDeltaWeeks": 1,
+        "destDeltaWeeks": -1,
+        "netCostRupees": 140000,
+        "confidenceLow": 40,
+        "confidenceHigh": 90,
+        "confidencePercent": 52,
+        "rampUpPenaltyApplied": false,
+        "rampUpNote": null
+      }
+    },
+    {
+      "input": {
+        "sourceProject": "Platform",
+        "destProject": "Payments",
+        "engineerCount": 3
+      },
+      "output": {
+        "sourceDeltaWeeks": 2,
+        "destDeltaWeeks": -6,
+        "netCostRupees": 1450000,
+        "confidenceLow": 60,
+        "confidenceHigh": 78,
+        "confidencePercent": 68,
+        "rampUpPenaltyApplied": true,
+        "rampUpNote": "Two of three engineers have no evidenced experience in checkout-service."
+      }
+    }
+  ],
+
+  "notes": {
+    "sourceDeltaWeeks": "Positive = source project slips by this many weeks.",
+    "destDeltaWeeks": "Negative = destination project ships this many weeks earlier.",
+    "confidenceLow/High": "P10-P90 style band in percent width, not a hard guarantee.",
+    "confidencePercent": "Optional single-number summary — UI should treat the band as primary, this as secondary."
+  }
+}

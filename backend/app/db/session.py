@@ -38,6 +38,10 @@ APP_ROLE_GRANTS: frozenset[str] = frozenset(
         "v_event_seq",
         "v_transitions",
         "v_case_sequence",
+        # Added by migrations/002_canonical_event_log.sql, not by the frozen
+        # schema. Both are pseudonymised and neither carries a cost figure.
+        "v_event_log",
+        "v_case_evidence",
         "v_cycle_time",
         "v_review_latency",
         "v_rework_pairs",
