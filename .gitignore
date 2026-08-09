@@ -43,3 +43,6 @@ data/repos/
 # Database dumps — shared out of band, never in the repo (20MB+, and a
 # database does not belong in git). See SETUP-FROM-DUMP.md.
 *.dump
+
+# 17MB pg_dump archive — distributed out of band, see SETUP-FROM-DUMP.md
+esi_dump.sql

@@ -231,3 +231,114 @@ export interface WorkforceFixture {
   recommendations: Recommendation[];
   impact: ProjectedImpact;
 }
+
+/* ---------------------------------------------------------------------------
+ * THE NAMED RECOMMENDATION CONTRACT
+ *
+ * What POST /workforce/recommend actually returns, and the single canonical
+ * shape for a named candidate. Both the Workforce screen and the Simulator
+ * read this; `Recommendation` above is now only the view model the shared
+ * card renders, produced from this by `toRecommendation` in ./api.
+ *
+ * EVERY FIELD IS DECLARED OR RESUME-DERIVED. There is no cycle time,
+ * throughput, review count, items merged or capability figure here, and there
+ * must never be one: the analytics layer is pseudonymised and this layer names
+ * people, so a performance number on a named card would be the join the
+ * product states on screen that it does not make.
+ * ------------------------------------------------------------------------- */
+
+/** The five weighted dimensions. Adding a sixth is how a performance term
+ *  would arrive, so the union is closed on purpose. */
+export type FitDimension =
+  | 'skillMatch'
+  | 'experienceMatch'
+  | 'preferenceMatch'
+  | 'availabilityMatch'
+  | 'projectFamiliarity';
+
+export type FitBreakdown = Record<FitDimension, number>;
+
+export interface EmployeeEvidence {
+  resumeProjects: string[];
+  resumeExperience: string[];
+  declaredShift: Shift;
+  declaredWorkAreas: WorkArea[];
+  declaredAvailability: Weekday[];
+  workStyle: WorkStyle;
+  openToOtherTeams: boolean;
+}
+
+export interface EmployeeRecommendation {
+  employeeId: string;
+  name: string;
+  /** 0–1. The weighted sum. `matchPercent` is the same number for display. */
+  matchScore: number;
+  matchPercent: number;
+  subScores: FitBreakdown;
+  /**
+   * weight × sub-score per dimension. These sum to `matchScore`, which is why
+   * they ARE the explanation rather than an approximation of one — there is
+   * no model here to attribute, only arithmetic to show.
+   */
+  contributions: FitBreakdown;
+  skills: string[];
+  matchedSkills: string[];
+  missingSkills: string[];
+  reasons: string[];
+  /** Honest caveats — a partial shift match, a missing day, an absent skill. */
+  flags: string[];
+  evidence: EmployeeEvidence;
+}
+
+export interface DerivedRequirement {
+  project: string;
+  component: string;
+  engineersRequired: number;
+  requiredSkills: string[];
+  workAreas: WorkArea[];
+  preferredShift: Shift;
+  requiredAvailability: Weekday[];
+  /** The component carried no skill signal; the UI must badge this. */
+  thin: boolean;
+  basis: string;
+}
+
+/** Why nobody should read these profiles as something a person submitted. */
+export interface DataBasis {
+  source: string;
+  volunteered: boolean;
+  label: string;
+  note: string;
+}
+
+export interface ExcludedEmployee {
+  employeeId: string;
+  name: string;
+  reason: string;
+}
+
+export interface WorkforceRecommendationSet {
+  requirement: DerivedRequirement;
+  recommendedEmployees: EmployeeRecommendation[];
+  alternates: EmployeeRecommendation[];
+  /** Excluded, not down-ranked: a stated boundary is not a low score. */
+  excluded: ExcludedEmployee[];
+  /**
+   * People with no submitted preference record. Counted, never named — this
+   * is what makes the consent gate visible instead of looking like a short
+   * candidate list.
+   */
+  anonymousCapacity: { count: number; note: string };
+  weights: FitBreakdown;
+  explanationMethod: string;
+  dataBasis: DataBasis;
+  privacyBasis: string;
+  humanInTheLoop: { decision: string; note: string; actions: string[] };
+}
+
+/** POST /simulate with `namedRecommendations: true`. Additive — every field of
+ *  SimulatorOutput is unchanged, so capacity mode is byte-identical. */
+export interface NamedSimulatorOutput extends SimulatorOutput {
+  mode: 'capacity' | 'named';
+  workforce?: WorkforceRecommendationSet;
+}

@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from app.api.workforce import RecommendRequest, build_recommendations, serialise_fit
+from app.api.workforce import RecommendRequest, build_recommendations
 from app.workforce import matching, requirements, store
 
 # --- fixtures --------------------------------------------------------------

@@ -20,16 +20,21 @@
 import workforceFixture from '../mock-data/workforce.json';
 import type {
   EmployeePreferences,
+  EmployeeRecommendation,
+  NamedSimulatorOutput,
   ProcessGraph,
   ProjectedImpact,
   Recommendation,
   SavePreferencesResult,
+  Shift,
   SimulatorInput,
   SimulatorOutput,
   SpendRow,
   WasteRow,
   WasteType,
+  Weekday,
   WorkforceFixture,
+  WorkforceRecommendationSet,
   WorkforceRequirement,
 } from './types';
 
@@ -186,6 +191,27 @@ export function runScenario(input: SimulatorInput): Promise<SimulatorOutput> {
 }
 
 /**
+ * The same scenario, asked to name people as well as price the move.
+ *
+ * Deliberately a separate function rather than a flag on `runScenario`: the
+ * two return different amounts of personal data, and a caller should have to
+ * say which one it wants. Capacity mode stays the default everywhere.
+ */
+export function runNamedScenario(
+  input: SimulatorInput,
+  opts: { shift?: Shift; availability?: Weekday[] } = {},
+): Promise<NamedSimulatorOutput> {
+  return post<NamedSimulatorOutput>('/simulate', {
+    sourceProject: input.sourceProject,
+    destProject: input.destProject,
+    engineerCount: input.engineerCount,
+    namedRecommendations: true,
+    shift: opts.shift ?? 'flexible',
+    availability: opts.availability ?? null,
+  });
+}
+
+/**
  * Previously enumerated every combination the fixture could answer. The
  * backend forecasts any pair it has observed delivery for, so there is no
  * finite list to guard against — an impossible scenario now comes back as a
@@ -270,14 +296,79 @@ export function getWorkforceRequirement(): Promise<WorkforceRequirement> {
 }
 
 /**
- * POST /workforce/recommend
+ * POST /workforce/recommend — real now, and no longer a fixture.
  *
- * The RAG call. Deliberately slower than the read endpoints for the same
- * reason `runScenario` is: retrieval plus generation is work, and the UI is
- * specified to show that it happened rather than appear to look it up.
+ * The two hardcoded cards this used to return ("Employee A", "Employee C")
+ * were the thing the feature existed to remove: a ranking that could not
+ * respond to employee data because it was not computed from any. This ranks
+ * consented profiles against a requirement derived from the component.
  */
-export function getRecommendations(): Promise<Recommendation[]> {
-  return settle(workforce.recommendations, 900);
+export function getRecommendationSet(
+  component: string,
+  engineerCount: number,
+  shift: Shift = 'flexible',
+  availability?: Weekday[],
+): Promise<WorkforceRecommendationSet> {
+  return post<WorkforceRecommendationSet>('/workforce/recommend', {
+    component,
+    engineerCount,
+    shift,
+    availability: availability ?? null,
+  });
+}
+
+/**
+ * Adapter to the view model the shared card renders.
+ *
+ * ONE canonical wire type (`EmployeeRecommendation`), one card, two screens.
+ * The card predates the backend and reads booleans where the engine now has
+ * continuous sub-scores, so the thresholds are stated here rather than hidden
+ * inside the component: "matched" means the dimension scored full marks, and
+ * anything less shows as not met so a partial match is never rendered as a
+ * clean tick.
+ */
+export function toRecommendation(rec: EmployeeRecommendation): Recommendation {
+  return {
+    employee: rec.name,
+    match: rec.matchPercent,
+    skills: rec.skills,
+    preferenceMatch: rec.subScores.preferenceMatch >= 1,
+    availabilityMatch: rec.subScores.availabilityMatch >= 1,
+    reason: rec.reasons.join(' '),
+    evidence: {
+      resume: {
+        projects: rec.evidence.resumeProjects,
+        skills: rec.skills,
+        experience: rec.evidence.resumeExperience,
+      },
+      preferences: {
+        preferredShift: rec.evidence.declaredShift,
+        workStyle: rec.evidence.workStyle,
+        availability: rec.evidence.declaredAvailability,
+      },
+      requirement: {
+        requiredSkills: rec.matchedSkills.concat(rec.missingSkills),
+        requiredShift: rec.evidence.declaredShift,
+        requiredAvailability: rec.evidence.declaredAvailability,
+      },
+      policies: [
+        'A reallocation is proposed to the employee, never applied without their acknowledgement.',
+        'Only employees who submitted a preference record can be named at all.',
+      ],
+    },
+  };
+}
+
+/** Kept for the Workforce screen's existing call site. */
+export async function getRecommendations(): Promise<Recommendation[]> {
+  const req = workforce.requirement;
+  const set = await getRecommendationSet(
+    `apache/kafka/${req.component.toLowerCase()}`,
+    req.engineersRequired,
+    req.requiredShift,
+    req.requiredAvailability,
+  );
+  return set.recommendedEmployees.concat(set.alternates).map(toRecommendation);
 }
 
 /**

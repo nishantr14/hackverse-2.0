@@ -5,11 +5,19 @@ import { ConfidenceBand } from '../components/ConfidenceBand';
 import { ErrorPanel } from '../components/Feedback';
 import { GlassCard } from '../components/GlassCard';
 import { Figure, Headline, Name } from '../components/Headline';
+import { EmployeeRecommendations } from '../components/EmployeeRecommendations';
 import { ImpactPanel } from '../components/ImpactPanel';
 import { IconDownload } from '../components/Icons';
 import { ScreenHeader } from '../components/ScreenHeader';
-import { getSimulatorProjects, getSpend, runScenario } from '../data/api';
-import type { SimulatorInput, SimulatorOutput, SpendRow } from '../data/types';
+import { getSimulatorProjects, getSpend, runNamedScenario, runScenario } from '../data/api';
+import type {
+  Shift,
+  SimulatorInput,
+  SimulatorOutput,
+  SpendRow,
+  WorkforceRecommendationSet,
+} from '../data/types';
+import { SHIFT_LABEL } from '../lib/workforce';
 import { formatMoney, formatMoneyDelta, formatWeekDelta } from '../lib/format';
 import { EASE_GLASS, snap } from '../lib/motion';
 import { buildProjectPalette, colorFor } from '../lib/projectColors';
@@ -58,6 +66,13 @@ const NO_PROJECTS: string[] = [];
  */
 const COUNTS = [5, 10, 25];
 
+/**
+ * The shifts the named mode can staff for. `flexible` first because it is the
+ * default: a scenario that has not said it needs evenings should not silently
+ * penalise everyone who did not declare them.
+ */
+const SHIFTS: Shift[] = ['flexible', 'morning', 'afternoon', 'evening'];
+
 export function SimulatorView() {
   const projectsAsync = useAsync<string[]>(getSimulatorProjects, []);
   const spend = useAsync<SpendRow[]>(getSpend, []);
@@ -80,6 +95,17 @@ export function SimulatorView() {
   const [dest, setDest] = useState('');
   const [count, setCount] = useState(5);
   const [state, setState] = useState<State>({ phase: 'idle' });
+  /**
+   * CAPACITY MODE IS THE DEFAULT AND STAYS REACHABLE.
+   *
+   * Named mode is additive. Being able to switch back to the anonymous
+   * simulator, and see it still work, is what shows the consent gate is a
+   * real boundary rather than a decoration on a screen that names everyone
+   * regardless.
+   */
+  const [named, setNamed] = useState(false);
+  const [shift, setShift] = useState<Shift>('flexible');
+  const [workforce, setWorkforce] = useState<WorkforceRecommendationSet | null>(null);
 
   useEffect(() => {
     if (projects.length >= 2) {
@@ -110,11 +136,25 @@ export function SimulatorView() {
 
   const run = useCallback(async (next: SimulatorInput) => {
     setState({ phase: 'calculating', input: next });
+    setWorkforce(null);
     const started = Date.now();
     try {
-      const output = await runScenario(next);
+      // Same simulator either way — named mode adds a block to the response
+      // and changes none of the cost or cycle-time arithmetic. Branched
+      // rather than narrowed: NamedSimulatorOutput extends SimulatorOutput,
+      // so the two do not form a union `in` can discriminate.
+      let output: SimulatorOutput;
+      let recommended: WorkforceRecommendationSet | null = null;
+      if (named) {
+        const namedOutput = await runNamedScenario(next, { shift });
+        recommended = namedOutput.workforce ?? null;
+        output = namedOutput;
+      } else {
+        output = await runScenario(next);
+      }
       const wait = Math.max(0, MIN_CALC_MS - (Date.now() - started));
       if (wait) await new Promise((r) => setTimeout(r, wait));
+      setWorkforce(recommended);
       setState({ phase: 'result', result: { input: next, output } });
     } catch (err) {
       const wait = Math.max(0, MIN_CALC_MS - (Date.now() - started));
@@ -125,7 +165,9 @@ export function SimulatorView() {
         message: err instanceof Error ? err.message : String(err),
       });
     }
-  }, []);
+    // `named` and `shift` are read inside, so a stale closure would silently
+    // run the wrong mode after a toggle.
+  }, [named, shift]);
 
   function applyPreset(p: SimulatorInput) {
     setSource(p.sourceProject);
@@ -325,6 +367,46 @@ export function SimulatorView() {
                       ? 'The event log carries evidence for this move.'
                       : 'No evidence for this exact move — the modelled ones are:'}
                 </span>
+                {/* Mode switch. Capacity is the default and stays one click
+                    away — showing both is what demonstrates the consent gate
+                    is real rather than decorative. */}
+                <div className="flex items-center gap-1.5">
+                  {(['capacity', 'named'] as const).map((m) => (
+                    <button
+                      key={m}
+                      type="button"
+                      onClick={() => setNamed(m === 'named')}
+                      className="rounded-full border px-3 py-1 text-[11.5px] transition-colors"
+                      style={{
+                        borderColor:
+                          named === (m === 'named') ? 'var(--ui-active-border)' : 'var(--border)',
+                        background: named === (m === 'named') ? 'var(--ui-active)' : 'transparent',
+                        color:
+                          named === (m === 'named')
+                            ? 'var(--text-primary)'
+                            : 'var(--text-secondary)',
+                      }}
+                    >
+                      {m === 'named' ? 'Recommend people' : 'Capacity only'}
+                    </button>
+                  ))}
+                </div>
+                {named &&
+                  SHIFTS.map((s) => (
+                    <button
+                      key={s}
+                      type="button"
+                      onClick={() => setShift(s)}
+                      className="rounded-full border px-3 py-1 text-[11.5px] transition-colors"
+                      style={{
+                        borderColor: shift === s ? 'var(--ui-active-border)' : 'var(--border)',
+                        background: shift === s ? 'var(--ui-active)' : 'transparent',
+                        color: shift === s ? 'var(--text-primary)' : 'var(--text-secondary)',
+                      }}
+                    >
+                      {SHIFT_LABEL[s]}
+                    </button>
+                  ))}
                 {available.map((p) => (
                   <button
                     key={`${p.sourceProject}-${p.destProject}-${p.engineerCount}`}
@@ -379,8 +461,25 @@ export function SimulatorView() {
               )}
             </AnimatePresence>
 
-            {/* the stage — two panels, always mounted so they never disappear
-                between states; only what fills them changes */}
+            {/* WHO, then WHY — above the impact stage on purpose. The people
+                are the decision; the cost is its consequence. */}
+            <AnimatePresence>
+              {state.phase === 'result' && workforce && (
+                <motion.div
+                  initial={{ opacity: 0, height: 0 }}
+                  animate={{ opacity: 1, height: 'auto' }}
+                  exit={{ opacity: 0, height: 0 }}
+                  transition={{ duration: 0.35, ease: EASE_GLASS }}
+                  style={{ overflow: 'hidden' }}
+                >
+                  <EmployeeRecommendations set={workforce} />
+                </motion.div>
+              )}
+            </AnimatePresence>
+
+            {/* WHAT HAPPENS IF WE DO IT — the stage. Two panels, always
+                mounted so they never disappear between states; only what
+                fills them changes */}
             <div className="grid items-stretch gap-4 lg:grid-cols-[minmax(0,1fr)_15rem_minmax(0,1fr)]">
               <ImpactPanel
                 lane={lanes[0]}
