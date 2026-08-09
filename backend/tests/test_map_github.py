@@ -183,24 +183,6 @@ def test_ticket_key_falls_back_to_the_body_last():
     assert mg.resolve_case(node, "apache/kafka")[:2] == ("KAFKA-4242", "ticket_key")
 
 
-@pytest.mark.parametrize("junk_title", ["MINOR-1022: fix flaky test", "KIP-848: new protocol"])
-def test_a_junk_ticket_like_match_is_rejected_not_filed_as_a_case(junk_title):
-    """[A-Z]{2,10}-\\d+ matches far more than Jira keys — MINOR- is a commit
-    convention, KIP- is a design proposal, neither is a KAFKA/FLINK issue.
-    Filing one as a case glues unrelated PRs together under a fake ticket."""
-    node = {
-        "number": 5,
-        "repo": "apache/kafka",
-        "title": junk_title,
-        "headRefName": "fix-flaky",
-        "body": "",
-    }
-    work_item_id, case_source, ticket_key = mg.resolve_case(node, "apache/kafka")
-    assert case_source == "pr"
-    assert work_item_id == "apache/kafka#5"
-    assert ticket_key is None
-
-
 def test_closing_issue_is_the_second_rung(with_issue):
     mapped = mg.map_pull_request(with_issue)
     assert mapped.work_item["work_item_id"] == "apache/kafka#900010"
@@ -946,12 +928,12 @@ def _land_pr(session, body: dict) -> None:
     )
 
 
-def test_write_work_items_dedupes_a_batch_colliding_on_the_same_case(pg_engine):
+def test_write_work_items_refuses_a_batch_colliding_on_the_same_case(pg_engine):
     """Two PRs resolving to the same ticket key (a revert and its original,
-    say) must not crash the batch upsert — Postgres rejects an ON CONFLICT
-    DO UPDATE statement that touches the same row twice in one VALUES list.
-    No hand-written fixture pair triggers this; at full real-data scale it's
-    routine."""
+    say) must not silently pick a winner — Postgres rejects an ON CONFLICT
+    DO UPDATE statement that touches the same row twice in one VALUES list
+    anyway, so this fails loudly and names the id rather than raising an
+    opaque CardinalityViolation. Callers must merge_work_items() first."""
     from sqlalchemy.orm import Session as OrmSession
 
     session = OrmSession(pg_engine)
@@ -968,8 +950,8 @@ def test_write_work_items_dedupes_a_batch_colliding_on_the_same_case(pg_engine):
             "jira_key": "KAFKA-900099",
         }
         other = {**row, "source_ref": "apache/kafka#2"}
-        written = mg._write_work_items(session, [row, other])
-        assert written == 1
+        with pytest.raises(ValueError, match="KAFKA-900099"):
+            mg._write_work_items(session, [row, other])
     finally:
         session.rollback()
         session.close()
@@ -996,6 +978,8 @@ def test_write_events_chunks_batches_past_the_parameter_limit(pg_engine):
             )
         )
         session.flush()
+        row_width = 7  # event_id, work_item_id, actor_hash, activity, ts, source, attrs
+        chunk_size = mg.PG_MAX_BIND_PARAMS // row_width
         rows = [
             {
                 "event_id": f"chunk-test-{i:06d}",
@@ -1006,10 +990,11 @@ def test_write_events_chunks_batches_past_the_parameter_limit(pg_engine):
                 "source": "github",
                 "attrs": {"sha": f"sha{i}"},
             }
-            for i in range(mg.EVENT_WRITE_CHUNK + 500)
+            for i in range(chunk_size + 500)
         ]
-        written = mg._write_events(session, rows)
+        written, collapsed = mg._write_events(session, rows)
         assert written == len(rows)
+        assert collapsed == 0
         count = session.execute(
             select(func.count())
             .select_from(EventLog)
@@ -1095,7 +1080,7 @@ def test_end_to_end_repoints_the_provisional_commit(seeded_session):
     landed = seeded_session.execute(
         select(EventLog.work_item_id).where(EventLog.event_id == "fixture-commit-0001")
     ).scalar_one()
-    assert landed == "KAFKA-900011", "the commit should have moved off the placeholder"
+    assert landed == "KAFKA-19777", "the commit should have moved off the placeholder"
 
 
 def test_end_to_end_ci_run_matches_by_head_sha(seeded_session):

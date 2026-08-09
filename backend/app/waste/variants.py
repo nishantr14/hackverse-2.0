@@ -5,7 +5,7 @@ Phase: Tier 0 (feeds ProcessView).
 
     python -m app.waste.variants
 
-v_variants (migrations/003_process_and_waste_views.sql) groups cases by
+v_variants (migrations/004_process_and_waste_views.sql) groups cases by
 their full collapsed, non-CI activity sequence, sums cost, and computes
 cost share per repo. RANK BY COST SHARE: the finding worth a demo beat is a
 variant rare by case count and large by cost share, and the API must be

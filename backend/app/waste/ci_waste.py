@@ -9,7 +9,7 @@ Runner-minutes on a rerun (attempt > 1) or a failed run are this database's
 strongest waste signal: no session inference, no estimate of who did what,
 just wall-clock minutes GitHub Actions actually burned on a run that either
 had to happen again or told nobody anything useful.
-v_ci_waste_minutes (migrations/003_process_and_waste_views.sql) computes
+v_ci_waste_minutes (migrations/004_process_and_waste_views.sql) computes
 this straight from ci_run.
 
 Pricing needs two citations that do not exist yet — config/rates.yaml's

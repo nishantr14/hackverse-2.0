@@ -52,7 +52,7 @@ APP_ROLE_GRANTS: frozenset[str] = frozenset(
         "backtest_result",
         "rate_card",
         "run_config",
-        # Added by migrations/003_process_and_waste_views.sql. Process
+        # Added by migrations/004_process_and_waste_views.sql. Process
         # discovery + waste detectors; v_actor_component_activity is
         # deliberately absent — see that view's own comment.
         "v_collapsed_sequence",

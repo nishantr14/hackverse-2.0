@@ -1,10 +1,11 @@
 -- =====================================================================
--- 003 — process discovery (P6) and waste-detector support views (P7).
+-- 004 — process discovery (P6) and waste-detector support views (P7).
 -- Owner: Diljit (cost/waste lane).
 --
--- docs/schema.sql is FROZEN and migrations/002_canonical_event_log.sql is
--- Dipen's. Nothing here redefines anything either file already has —
--- v_transitions, v_case_sequence, v_review_latency, v_rework_pairs,
+-- docs/schema.sql is FROZEN, migrations/002_canonical_event_log.sql is
+-- Dipen's, and 003_raw_payload_immutable.sql is Nishant's (that number was
+-- claimed first). Nothing here redefines anything any of those already
+-- have — v_transitions, v_case_sequence, v_review_latency, v_rework_pairs,
 -- v_backlog_time and v_case_cost already exist and are reused below.
 --
 -- Applied at runtime (docker initdb only ever sees docs/schema.sql), same

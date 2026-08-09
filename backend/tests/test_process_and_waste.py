@@ -1,7 +1,7 @@
 """
 P6 (process discovery) and P7 (waste detectors) tests.
 
-Views live in migrations/003_process_and_waste_views.sql and are exercised
+Views live in migrations/004_process_and_waste_views.sql and are exercised
 here against real Postgres — skip rather than fail when nothing is
 listening, same convention as test_normalise.py / test_cost_rates.py.
 """

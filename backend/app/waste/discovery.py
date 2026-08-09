@@ -12,7 +12,7 @@ hairball without the collapse-and-significance-filter steps below.
 
 Nodes are collapsed runs of one activity (v_collapsed_sequence — a PR with
 six review rounds is one "review x6" node, not six). Edges come from
-v_transitions_human / v_edges (migrations/003_process_and_waste_views.sql).
+v_transitions_human / v_edges (migrations/004_process_and_waste_views.sql).
 
 EDGE WEIGHT IS COST, NOT FREQUENCY. `case_cost_exposure` sums each
 distinct case's total cost once per case touching the edge. Right now

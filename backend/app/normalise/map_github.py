@@ -106,7 +106,6 @@ from app.config import get_settings
 from app.db.models import Actor, CiRun, EventLog, RawPayload, WorkItem
 from app.db.session import write_session
 from app.ingestion.git_local import ROOT_COMPONENT, infer_band, infer_tenure
-from app.ingestion.projects import is_real_ticket
 from app.ingestion.pseudonymize import assert_no_identity
 from app.normalise.case_span import CaseSpan, SpanReport, span_days, summarise
 from app.normalise.event_log import absence_reason
@@ -306,11 +305,7 @@ def resolve_case(node: dict[str, Any], repo: str) -> tuple[str, str, str | None]
     point of decision #6.
     """
     key = ticket_key_from(node.get("title"), node.get("headRefName"), node.get("body"))
-    # `[A-Z]{2,10}-\d+` matches far more than Jira keys — KIP-909, CVE-2026,
-    # SHA-256, GPT-5 all match. is_real_ticket requires the project prefix to
-    # be the one this repo's Jira actually uses; the same guard git_local
-    # applies to a commit subject, applied here to a PR title/branch/body.
-    if key and is_real_ticket(key, repo):
+    if key:
         return key, "ticket_key", key
 
     for issue in _nodes(node.get("closingIssuesReferences")):

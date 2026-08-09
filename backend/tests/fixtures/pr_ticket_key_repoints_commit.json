@@ -1,6 +1,6 @@
 {
   "number": 900005,
-  "title": "KAFKA-900011: correct offset fetch on empty partition",
+  "title": "KAFKA-19777: correct offset fetch on empty partition",
   "body": "The squashed commit subject carried no ticket key, so git_local filed it under a provisional case.",
   "headRefName": "offset-fetch-empty",
   "createdAt": "2026-07-01T09:00:00+00:00",
