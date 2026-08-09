@@ -22,7 +22,24 @@ import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 're
  * from its natural height without hard-coding one.
  */
 
-const CONDENSE_AT = 48;
+/**
+ * Two thresholds, not one, and the gap between them is load-bearing.
+ *
+ * Condensing removes ~48px of header, and the header is in flow, so the
+ * document gets 48px shorter. Chrome's scroll anchoring then compensates by
+ * moving scrollY back by that same 48px to keep the visible content still —
+ * which, with a single threshold, dropped scrollY straight back under it.
+ * The header expanded, the document grew, anchoring pushed scrollY forward,
+ * it condensed again. That loop is the flicker, and because the collapse is
+ * a 300ms animation rather than a jump, anchoring chased it every frame for
+ * the whole transition.
+ *
+ * ENTER - EXIT must stay comfortably larger than the height the header
+ * gives up, so an anchoring correction can never carry scrollY across the
+ * other threshold. Measured collapse is ~48px; the 64px gap covers it.
+ */
+const CONDENSE_ENTER = 96;
+const CONDENSE_EXIT = 32;
 const EASE = 'cubic-bezier(0.22, 1, 0.36, 1)';
 
 interface ScreenHeaderProps {
@@ -36,22 +53,29 @@ interface ScreenHeaderProps {
   headline?: (compact: boolean) => ReactNode;
 }
 
-function useCondensed(threshold = CONDENSE_AT) {
+function useCondensed(enter = CONDENSE_ENTER, exit = CONDENSE_EXIT) {
   const [condensed, setCondensed] = useState(false);
   const current = useRef(false);
 
   useEffect(() => {
+    // Read straight off the scroll event rather than coalescing into a
+    // requestAnimationFrame. This is two number comparisons and a ref check,
+    // and it calls setState only when the boolean actually flips — so the
+    // throttle saved nothing measurable while making the header depend on
+    // frames being produced at all, which they are not in a hidden tab.
     const onScroll = () => {
-      const next = window.scrollY > threshold;
+      // Hysteresis: which threshold applies depends on where we already are.
+      const next = current.current ? window.scrollY > exit : window.scrollY > enter;
       if (next !== current.current) {
         current.current = next;
         setCondensed(next);
       }
     };
+
     onScroll();
     window.addEventListener('scroll', onScroll, { passive: true });
     return () => window.removeEventListener('scroll', onScroll);
-  }, [threshold]);
+  }, [enter, exit]);
 
   return condensed;
 }
@@ -95,6 +119,11 @@ export function ScreenHeader({ step, eyebrow, title, lede, controls, headline }:
         backgroundColor: condensed ? 'rgba(11,14,20,0.97)' : 'rgba(11,14,20,0.88)',
         borderBottomColor: 'var(--border)',
         backdropFilter: 'blur(20px)',
+        // Keep the browser from trying to hold the view still while THIS
+        // element is the thing changing size. Without it, every frame of the
+        // 300ms collapse produced a scroll correction, which re-entered the
+        // scroll handler and made the page judder for the whole animation.
+        overflowAnchor: 'none',
         transition: `padding 300ms ${EASE}, background-color 300ms ${EASE}`,
       }}
     >
@@ -113,6 +142,7 @@ export function ScreenHeader({ step, eyebrow, title, lede, controls, headline }:
               height: condensed ? 0 : naturalHeight,
               opacity: condensed ? 0 : 1,
               overflow: 'hidden',
+              overflowAnchor: 'none',
               transition: `height 300ms ${EASE}, opacity 250ms ${EASE}`,
             }}
           >

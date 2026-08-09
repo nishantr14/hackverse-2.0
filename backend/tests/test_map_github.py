@@ -20,6 +20,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+
 from app.db.models import ACTIVITIES
 from app.ingestion.git_local import Commit
 from app.ingestion.git_local import event_id_for as git_event_id
@@ -1013,8 +1014,9 @@ def seeded_session(pg_engine):
     Everything runs inside one transaction that is never committed, so the
     developer's real ingest is untouched no matter how a test ends.
     """
-    from app.db.models import EventLog, RawPayload, WorkItem
     from sqlalchemy.orm import Session as OrmSession
+
+    from app.db.models import EventLog, RawPayload, WorkItem
 
     session = OrmSession(pg_engine)
     try:
@@ -1072,8 +1074,9 @@ def test_end_to_end_writes_every_table(seeded_session):
 
 
 def test_end_to_end_repoints_the_provisional_commit(seeded_session):
-    from app.db.models import EventLog
     from sqlalchemy import select
+
+    from app.db.models import EventLog
 
     mg.run(seeded_session, repos=[FIXTURE_REPO])
     seeded_session.flush()
@@ -1084,8 +1087,9 @@ def test_end_to_end_repoints_the_provisional_commit(seeded_session):
 
 
 def test_end_to_end_ci_run_matches_by_head_sha(seeded_session):
-    from app.db.models import CiRun
     from sqlalchemy import select
+
+    from app.db.models import CiRun
 
     mg.run(seeded_session, repos=[FIXTURE_REPO])
     seeded_session.flush()
@@ -1100,8 +1104,9 @@ def test_end_to_end_ci_run_matches_by_head_sha(seeded_session):
 
 def test_end_to_end_is_idempotent(seeded_session):
     """A re-run writes the same rows and changes no counts."""
-    from app.db.models import EventLog
     from sqlalchemy import func, select
+
+    from app.db.models import EventLog
 
     mg.run(seeded_session, repos=[FIXTURE_REPO])
     seeded_session.flush()
@@ -1140,8 +1145,9 @@ def test_end_to_end_activities_pass_the_schema_check(seeded_session):
     """Proves Postgres accepted every activity we wrote, rather than trusting
     our own list. Scoped to the ids this run produced, since the database also
     holds the developer's real events."""
-    from app.db.models import EventLog
     from sqlalchemy import select
+
+    from app.db.models import EventLog
 
     expected_ids = {
         e["event_id"]
@@ -1171,8 +1177,9 @@ def test_three_prs_on_one_ticket_write_exactly_one_row(seeded_session):
     opened_at, MAX closed_at and a component that does not depend on the order
     the payloads arrived in.
     """
-    from app.db.models import WorkItem
     from sqlalchemy import select
+
+    from app.db.models import WorkItem
 
     for body in (
         _pr(9001, key="KAFKA-99999", opened="2026-03-01T00:00:00+00:00",
@@ -1208,8 +1215,9 @@ def test_three_prs_on_one_ticket_write_exactly_one_row(seeded_session):
 
 def test_repeated_runs_keep_the_merged_component_stable(seeded_session):
     """Re-running must not flip the component of a merged case."""
-    from app.db.models import WorkItem
     from sqlalchemy import select
+
+    from app.db.models import WorkItem
 
     for number, paths in ((9101, ["streams/a", "streams/b"]), (9102, ["clients/c"])):
         _land_pr(seeded_session, _pr(number, key="KAFKA-99998", paths=paths))
@@ -1298,8 +1306,9 @@ def test_a_long_running_case_is_an_umbrella_on_span_alone(seeded_session):
 def test_flagging_a_case_does_not_unmerge_it(seeded_session):
     """The flag is advisory. If it ever started splitting cases it would be
     quietly overturning decision #6."""
-    from app.db.models import WorkItem
     from sqlalchemy import func, select
+
+    from app.db.models import WorkItem
 
     for offset in range(9):
         _land_pr(seeded_session, _pr(9501 + offset, key="KAFKA-99995"))
@@ -1474,8 +1483,9 @@ def test_report_omits_the_window_section_when_the_window_did_nothing(capsys):
 
 
 def test_run_skips_out_of_window_prs_end_to_end(seeded_session):
-    from app.db.models import WorkItem
     from sqlalchemy import select
+
+    from app.db.models import WorkItem
 
     _land_pr(seeded_session, _pr(9601, key="KAFKA-OLD1",
                                  opened="2015-07-21T00:00:00+00:00",
@@ -1493,8 +1503,9 @@ def test_run_skips_out_of_window_prs_end_to_end(seeded_session):
 
 def test_skipping_never_touches_raw_payload(seeded_session):
     """Nishant owns ingestion and the raw layer keeps everything it fetched."""
-    from app.db.models import RawPayload
     from sqlalchemy import func, select
+
+    from app.db.models import RawPayload
 
     _land_pr(seeded_session, _pr(9701, key="KAFKA-OLD2",
                                  opened="2014-01-01T00:00:00+00:00"))
@@ -1522,8 +1533,9 @@ def test_the_pr_opened_at_wins_when_it_is_earlier(seeded_session):
     while closed_at was overwritten with the PR's - and for a squash merge the
     two are the same second, giving a span of exactly zero.
     """
-    from app.db.models import WorkItem
     from sqlalchemy import select
+
+    from app.db.models import WorkItem
 
     merge_instant = "2026-07-04T09:00:00+00:00"
     seeded_session.add(
@@ -1556,8 +1568,9 @@ def test_the_pr_opened_at_wins_when_it_is_earlier(seeded_session):
 def test_an_earlier_commit_still_wins_over_the_pr(seeded_session):
     """LEAST, not overwrite: work that began before the PR was opened keeps
     the earlier date, which is git_local's rule and stays git_local's rule."""
-    from app.db.models import WorkItem
     from sqlalchemy import select
+
+    from app.db.models import WorkItem
 
     seeded_session.add(
         WorkItem(

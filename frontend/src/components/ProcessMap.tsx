@@ -2,7 +2,15 @@ import { motion } from 'framer-motion';
 import type { ProcessEdge, ProcessGraph } from '../data/types';
 import { formatMoney } from '../lib/format';
 import { EASE_GLASS, snap } from '../lib/motion';
-import { CANVAS, NODE, NODE_POS, drawEdges, variantTone, VARIANT_LABEL } from '../lib/process';
+import {
+  CANVAS,
+  NODE,
+  NODE_POS,
+  drawEdges,
+  posFor,
+  variantTone,
+  VARIANT_LABEL,
+} from '../lib/process';
 
 /**
  * The process map.
@@ -25,9 +33,26 @@ interface ProcessMapProps {
   onActiveEdge: (edge: ProcessEdge | null) => void;
 }
 
+/**
+ * How many lines carry a permanent rupee label.
+ *
+ * Labels used to appear on any line thicker than a threshold, which on the
+ * real graph meant most of them — twenty price tags overlapping each other
+ * and the boxes underneath. The rest are one hover away, which is where a
+ * detail belongs.
+ */
+const LABELLED_EDGES = 6;
+
 export function ProcessMap({ graph, variant, activeEdge, onActiveEdge }: ProcessMapProps) {
   const edges = drawEdges(graph, variant);
   const detour = NODE_POS.changes_requested;
+
+  const labelled = new Set(
+    [...edges]
+      .sort((a, b) => b.edge.costRupees - a.edge.costRupees)
+      .slice(0, LABELLED_EDGES)
+      .map((d) => d.key),
+  );
 
   return (
     <div className="w-full">
@@ -99,7 +124,10 @@ export function ProcessMap({ graph, variant, activeEdge, onActiveEdge }: Process
 
         {/* a soft wash behind the detour, so "this is a different zone of the
             process" reads before you trace a single line into it */}
-        <ellipse cx={detour.cx} cy={detour.cy + 30} rx={340} ry={220} fill="url(#detour-zone)" />
+        {/* Sized to the detour row only. At the old ry it reached down over
+            Review, Approved and Merged, tinting the happy path amber — the
+            one colour on this screen that means "waste". */}
+        <ellipse cx={detour.cx} cy={detour.cy} rx={330} ry={140} fill="url(#detour-zone)" />
 
         {edges.map((d, i) => {
           const tone = variantTone(d.edge.variant);
@@ -141,7 +169,7 @@ export function ProcessMap({ graph, variant, activeEdge, onActiveEdge }: Process
                   opacity: snap,
                 }}
               />
-              {(isActive || d.width > 9) && (
+              {(isActive || labelled.has(d.key)) && (
                 <motion.g
                   initial={{ opacity: 0 }}
                   animate={{ opacity: dim ? 0.3 : 1 }}
@@ -172,8 +200,10 @@ export function ProcessMap({ graph, variant, activeEdge, onActiveEdge }: Process
         })}
 
         {graph.nodes.map((node, i) => {
-          const p = NODE_POS[node.id];
-          if (!p) return null;
+          // posFor, not NODE_POS[...]: an unplaced activity gets a stable
+          // parking spot instead of silently disappearing from a map whose
+          // whole job is to show everything the process actually does.
+          const p = posFor(node.id);
           const touched =
             activeEdge !== null && (activeEdge.from === node.id || activeEdge.to === node.id);
           const isDetour = node.id === 'changes_requested';
@@ -192,21 +222,30 @@ export function ProcessMap({ graph, variant, activeEdge, onActiveEdge }: Process
                 width={NODE.w}
                 height={NODE.h}
                 rx={14}
+                /* rgba(r, g, b, a), NOT the modern rgb(r g b / a) form.
+                   Framer Motion's colour parser does not read the
+                   space-separated syntax, so every one of these animated
+                   fills resolved to the literal string "undefined" — the
+                   boxes rendered with fill:black and no stroke at all, and
+                   only looked deliberate because the page behind them is
+                   nearly black. Static SVG attributes elsewhere can keep
+                   the modern syntax; animated ones cannot. */
+                initial={false}
                 animate={{
                   fill: touched
                     ? isDetour
-                      ? 'rgb(245 166 35 / 0.16)'
-                      : 'rgb(40 48 66)'
+                      ? 'rgba(245, 166, 35, 0.16)'
+                      : 'rgba(40, 48, 66, 1)'
                     : isDetour
-                      ? 'rgb(245 166 35 / 0.08)'
-                      : 'rgb(30 36 50)',
+                      ? 'rgba(245, 166, 35, 0.08)'
+                      : 'rgba(30, 36, 50, 1)',
                   stroke: touched
                     ? isDetour
-                      ? 'rgb(245 166 35 / 0.75)'
-                      : 'rgb(232 236 244 / 0.55)'
+                      ? 'rgba(245, 166, 35, 0.75)'
+                      : 'rgba(232, 236, 244, 0.55)'
                     : isDetour
-                      ? 'rgb(245 166 35 / 0.4)'
-                      : 'rgb(56 66 90)',
+                      ? 'rgba(245, 166, 35, 0.4)'
+                      : 'rgba(56, 66, 90, 1)',
                 }}
                 transition={snap}
                 strokeWidth={1.75}

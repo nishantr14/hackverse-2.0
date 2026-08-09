@@ -12,7 +12,13 @@ import { SpendMap } from '../components/SpendMap';
 import { SpendTable } from '../components/SpendTable';
 import { getSpend, getWaste } from '../data/api';
 import type { SpendRow, WasteRow } from '../data/types';
-import { formatMoney, formatPercent, formatRupeesExact, moneyScaleFormatter } from '../lib/format';
+import {
+  formatHours,
+  formatMoney,
+  formatPercent,
+  formatRupeesExact,
+  moneyScaleFormatter,
+} from '../lib/format';
 import { EASE_GLASS, stagger } from '../lib/motion';
 import { buildProjectPalette, colorFor } from '../lib/projectColors';
 import { byComponent, byProject, flaggedComponents, totals, type ComponentSpend } from '../lib/spend';
@@ -71,7 +77,7 @@ export function SpendView() {
           <>
             <Name color={c.base}>{focusComponent.component}</Name> cost{' '}
             <Figure>{formatMoney(focusComponent.cost)}</Figure> — that is{' '}
-            {formatPercent(focusComponent.cost / total)} of the quarter&rsquo;s engineering spend.
+            {formatPercent(focusComponent.cost / total)} of engineering spend in the last 12 months.
           </>
         ),
         sub: `${focusComponent.project} · ${focusComponent.workItems.length} work item${
@@ -88,14 +94,14 @@ export function SpendView() {
           <>
             <Name color={c.base}>{focusedProject.project}</Name> took{' '}
             <Figure>{formatMoney(focusedProject.cost)}</Figure> —{' '}
-            {formatPercent(focusedProject.cost / total)} of everything this quarter.
+            {formatPercent(focusedProject.cost / total)} of everything in the last 12 months.
           </>
         ),
         sub: `${focusedProject.workItems} work items across ${
           focusedProject.components.length
-        } component${focusedProject.components.length === 1 ? '' : 's'} · ${
-          focusedProject.authorHours + focusedProject.reviewHours
-        } engineer-hours.`,
+        } component${
+          focusedProject.components.length === 1 ? '' : 's'
+        } · ${formatHours(focusedProject.authorHours + focusedProject.reviewHours)} engineer-hours.`,
       };
     }
 
@@ -106,7 +112,7 @@ export function SpendView() {
       body: (
         <>
           <Name color={colorFor(palette, topProject.project).base}>{topProject.project}</Name> is
-          the most expensive project this quarter — <Figure>{formatMoney(topProject.cost)}</Figure>{' '}
+          the most expensive project in the last 12 months — <Figure>{formatMoney(topProject.cost)}</Figure>{' '}
           of a <Figure>{formatMoney(total)}</Figure> engineering bill.
         </>
       ),
@@ -170,7 +176,9 @@ export function SpendView() {
               hero={{
                 label: 'Total engineering spend',
                 value: <AnimatedNumber value={t.cost} format={moneyScaleFormatter(t.cost)} />,
-                detail: `${t.workItems} work items · ${t.projects} projects · ${t.totalHours} engineer-hours`,
+                detail: `${t.workItems} work items · ${t.projects} projects · ${formatHours(
+                  t.totalHours,
+                )} engineer-hours`,
                 formula: (
                   <>
                     Sum of <strong>cost</strong> across every priced work item in the event log.
@@ -189,11 +197,15 @@ export function SpendView() {
                       duration={0.9}
                     />
                   ),
-                  detail: `${formatMoney(t.cost)} ÷ ${t.totalHours} engineer-hours`,
+                  detail: `${formatMoney(t.labourCost)} labour ÷ ${formatHours(
+                    t.totalHours,
+                  )}`,
                   formula: (
                     <>
-                      Total spend ÷ total engineer-hours. This is the priced unit of work — the
-                      number that turns activity into budget.
+                      Labour spend ÷ engineer-hours. Meetings, CI and tokens are excluded from
+                      this one — they are in the total above, but none of them is an
+                      engineer-hour, and dividing by them would push the rate above the staff
+                      band.
                     </>
                   ),
                 },
@@ -206,7 +218,9 @@ export function SpendView() {
                       duration={0.9}
                     />
                   ),
-                  detail: `${t.reviewHours} review h of ${t.totalHours} total`,
+                  detail: `${formatHours(t.reviewHours)} review of ${formatHours(
+                    t.totalHours,
+                  )} total`,
                   formula: (
                     <>
                       Review hours ÷ (author + review) hours. Screen 03 prices what the waiting

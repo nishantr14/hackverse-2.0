@@ -536,14 +536,21 @@ def clean_github_rows(pg_engine):
     from sqlalchemy import text
 
     def _clean():
-        with pg_engine.begin() as conn:
-            conn.execute(
-                text(
-                    "DELETE FROM raw_payload WHERE source='github_graphql' "
-                    "AND entity_id = ANY(:keys)"
-                ),
-                {"keys": [f"{TEST_REPO}#{n}" for n in range(1, 200)]},
+        # raw_payload is append-only (migrations/003), so cleanup goes through
+        # the one deliberate purge path and names its own rows. A fixture can
+        # no longer reach the real payloads even by accident — which is
+        # exactly how 5,632 of them were lost the first time.
+        from app.db.purge import purge_raw_payload
+        from app.db.session import write_session
+
+        with write_session() as session:
+            purge_raw_payload(
+                session,
+                source="github_graphql",
+                entity_ids=[f"{TEST_REPO}#{n}" for n in range(1, 200)],
             )
+            session.commit()
+        with pg_engine.begin() as conn:
             conn.execute(
                 text(
                     "DELETE FROM ingest_cursor WHERE source='github_graphql' "
@@ -777,18 +784,24 @@ def clean_actions_rows(pg_engine):
     from sqlalchemy import text
 
     def _clean():
+        # raw_payload is append-only (migrations/003). ci_run is not evidence
+        # — it is derived and re-derivable — so it is still a plain delete,
+        # scoped to this fixture's own repo.
+        from app.db.purge import purge_raw_payload
+        from app.db.session import write_session
+
         with pg_engine.begin() as conn:
             conn.execute(
                 text("DELETE FROM ci_run WHERE repo = ANY(:keys)"),
                 {"keys": [TEST_REPO]},
             )
-            conn.execute(
-                text(
-                    "DELETE FROM raw_payload WHERE source='github_actions' "
-                    "AND entity_id = ANY(:keys)"
-                ),
-                {"keys": [f"{TEST_REPO}#{n}" for n in range(200)]},
+        with write_session() as session:
+            purge_raw_payload(
+                session,
+                source="github_actions",
+                entity_ids=[f"{TEST_REPO}#{n}" for n in range(200)],
             )
+            session.commit()
 
     _clean()
     yield

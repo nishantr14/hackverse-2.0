@@ -102,6 +102,10 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from sqlalchemy import bindparam, func, select
+from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.orm import Session
+
 from app.config import get_settings
 from app.db.models import Actor, CiRun, EventLog, RawPayload, WorkItem
 from app.db.session import write_session
@@ -109,9 +113,6 @@ from app.ingestion.git_local import ROOT_COMPONENT, infer_band, infer_tenure
 from app.ingestion.pseudonymize import assert_no_identity
 from app.normalise.case_span import CaseSpan, SpanReport, span_days, summarise
 from app.normalise.event_log import absence_reason
-from sqlalchemy import bindparam, func, select
-from sqlalchemy.dialects.postgresql import insert
-from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
 
