@@ -39,7 +39,7 @@ shareable.
 ```bash
 git clone https://github.com/nishantr14/hackverse-2.0.git
 cd hackverse-2.0
-git checkout nishant/full-demo-integration
+git checkout nishant/esi-working-demo
 ```
 
 ### 2. Environment
