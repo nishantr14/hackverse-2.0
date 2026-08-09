@@ -83,13 +83,15 @@ import sys
 from collections import Counter
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from app.config import get_settings
 from app.db.models import Actor, CiRun, EventLog, RawPayload, WorkItem
 from app.db.session import write_session
 from app.ingestion.git_local import ROOT_COMPONENT, infer_band, infer_tenure
 from app.ingestion.pseudonymize import assert_no_identity
+from app.normalise.case_span import CaseSpan, SpanReport, span_days, summarise
 from sqlalchemy import bindparam, func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
@@ -148,11 +150,59 @@ WORKFLOW_RUN_CONTRACT: tuple[str, ...] = (
 )
 
 
+#: Postgres' wire protocol caps one statement at 65,535 bound parameters, and
+#: a full kafka window is ~20,000 events times 7 columns = ~140,000. Every bulk
+#: insert below is therefore chunked. The chunk size is derived from the row
+#: width at call time rather than hardcoded, so adding a column to a table
+#: cannot silently push a batch back over the limit.
+PG_MAX_BIND_PARAMS = 65535
+
+
+#: Days per month, as both ingesters compute it. Restated rather than imported
+#: because neither exposes it, but the arithmetic must stay identical: a
+#: cutoff half a day from git_local's would put commits and PRs in different
+#: windows and reintroduce exactly the drift this filter removes.
+DAYS_PER_MONTH = 30.44
+
+
+def window_cutoff(now: datetime | None = None) -> datetime:
+    """The HISTORY_MONTHS boundary, computed exactly as the ingesters do.
+
+    `github_connector` pages by UPDATED_AT DESC and stops at this boundary,
+    which is the right filter for "was this active recently" and the wrong one
+    for "did this happen recently". A 2023 PR re-enters the feed the moment
+    somebody comments on it, carrying its 2023 createdAt. The connector's own
+    `_content_predates_window` docstring says so and deliberately does not drop
+    the row - it counts it and leaves the decision to this module, because
+    `raw_payload` is supposed to keep everything that was fetched.
+
+    This is that decision. `now` is injectable so tests do not depend on the
+    wall clock; production passes nothing, matching git_local:614 and
+    github_connector:606.
+    """
+    months = get_settings().history_months
+    return (now or datetime.now(UTC)) - timedelta(days=round(months * DAYS_PER_MONTH))
+
+
+def _chunked(
+    rows: list[dict[str, Any]], width: int
+) -> Iterable[list[dict[str, Any]]]:
+    size = max(1, PG_MAX_BIND_PARAMS // max(width, 1))
+    for start in range(0, len(rows), size):
+        yield rows[start : start + size]
+
+
 @dataclass
 class Stats:
     payloads_read: int = 0
     git_local_skipped: int = 0
     pull_requests: int = 0
+    #: PRs both created and merged before the HISTORY_MONTHS boundary.
+    #: Skipped, never deleted - the raw layer keeps what it fetched.
+    prs_outside_window: int = 0
+    #: PRs created before the boundary but merged or still open inside it.
+    #: Kept. Counted because filtering on createdAt alone would drop them.
+    prs_created_before_window_kept: int = 0
     workflow_runs: int = 0
     work_items: int = 0
     events: int = 0
@@ -169,6 +219,14 @@ class Stats:
     epics_found: int = 0
     sprintless_cases: int = 0
     orphaned_provisional: int = 0
+    cases_merged: int = 0
+    prs_merged_away: int = 0
+    events_collapsed: int = 0
+    ci_runs_collapsed: int = 0
+    largest_case: tuple[str, int] | None = None
+    #: Umbrella cases, computed at read time from rows this run produced.
+    #: Advisory only - decision #6 is unchanged and nothing is stored.
+    spans: SpanReport | None = None
 
 
 # =========================================================================
@@ -316,6 +374,10 @@ class MappedPR:
     events: list[dict[str, Any]]
     merge_commit_sha: str | None
     case_source: str
+    #: Files touched, kept so `merge_work_items` can weight a component vote by
+    #: how much of the case each PR actually changed.
+    paths: list[str] = field(default_factory=list)
+    pr_number: int = 0
     bot_events_dropped: int = 0
     unmapped_review_states: Counter = field(default_factory=Counter)
 
@@ -439,9 +501,107 @@ def map_pull_request(body: dict[str, Any], stats: Stats | None = None) -> Mapped
         events=events,
         merge_commit_sha=str(merge_commit) if merge_commit else None,
         case_source=case_source,
+        paths=paths,
+        pr_number=int(number),
         bot_events_dropped=dropped,
         unmapped_review_states=unmapped,
     )
+
+
+# =========================================================================
+# Case merging — several PRs on one case
+# =========================================================================
+
+#: Decision #6's chain, strongest first. Used to pick a winner when PRs that
+#: share a case resolved their id by different routes.
+CASE_SOURCE_PRECEDENCE: tuple[str, ...] = ("ticket_key", "issue", "pr")
+
+
+def merge_work_items(group: Sequence[MappedPR]) -> dict[str, Any]:
+    """Collapse every PR sharing one work_item_id into a single row.
+
+    Apache files a main PR, its follow-ups and its backports under one Jira
+    key, so `KAFKA-10199` is 19 pull requests. Sending 19 rows with the same
+    primary key into one `INSERT ... ON CONFLICT DO UPDATE` is what Postgres
+    rejects with CardinalityViolation: within a single statement it refuses to
+    update the same row twice, because which of the 19 won would be arbitrary.
+
+    Every rule below is a function of the group's contents only, never of the
+    order the payloads came back in, so two runs over the same data produce
+    byte-identical rows:
+
+    opened_at   MIN over the group. The case started when its first PR opened.
+    closed_at   MAX over the group, but NULL if any member is still open — a
+                case with live work in it is not closed, and taking the MAX
+                would report it finished while a PR is still in review.
+    component   `component_of` over every path in the group, so the vote is
+                weighted by how many files each PR touched and the existing
+                alphabetical tie-break still applies. Falls back to a vote
+                over the members' own components when no PR listed files.
+    case_source strongest present, ticket_key > issue > pr.
+    source_ref  the earliest-opened PR, tie-broken by the lower number.
+    epic        most common non-null, tie-broken alphabetically.
+    """
+    if not group:
+        raise ValueError("cannot merge an empty group")
+    items = [m.work_item for m in group]
+    ids = {item["work_item_id"] for item in items}
+    if len(ids) != 1:
+        raise ValueError(f"merge_work_items got mixed ids: {sorted(ids)}")
+
+    opened = [item["opened_at"] for item in items if item["opened_at"]]
+    closed = [item["closed_at"] for item in items]
+
+    paths = [path for m in group for path in m.paths]
+    component = component_of(paths)
+    if component is None:
+        component = _most_common(item["component"] for item in items)
+
+    # min() over (opened_at, number) needs a total order, and opened_at may be
+    # None. Sort None last so a PR with a real date always wins the tie.
+    lead = min(
+        group,
+        key=lambda m: (
+            m.work_item["opened_at"] is None,
+            m.work_item["opened_at"] or datetime.max.replace(tzinfo=UTC),
+            m.pr_number,
+        ),
+    )
+
+    return {
+        "work_item_id": items[0]["work_item_id"],
+        "repo": min(item["repo"] for item in items),
+        "component": component,
+        "epic": _most_common(item["epic"] for item in items),
+        "opened_at": min(opened) if opened else None,
+        # `all(closed)` is deliberate: one still-open PR keeps the case open.
+        "closed_at": max(closed) if closed and all(closed) else None,
+        "source_ref": lead.work_item["source_ref"],
+        "case_source": _strongest_case_source(m.case_source for m in group),
+        "jira_key": _most_common(item["jira_key"] for item in items),
+    }
+
+
+def _most_common(values: Iterable[Any]) -> Any:
+    """Most frequent non-null value, ties broken alphabetically.
+
+    The tie-break is what makes this run-order independent: `Counter.most_common`
+    alone falls back to insertion order, which is exactly the dependency this
+    function exists to remove.
+    """
+    counts = Counter(v for v in values if v)
+    if not counts:
+        return None
+    best = max(counts.values())
+    return min(v for v, n in counts.items() if n == best)
+
+
+def _strongest_case_source(values: Iterable[str]) -> str:
+    present = set(values)
+    for candidate in CASE_SOURCE_PRECEDENCE:
+        if candidate in present:
+            return candidate
+    return "pr"
 
 
 def map_workflow_run(
@@ -572,25 +732,58 @@ def _write_work_items(session: Session, rows: list[dict[str, Any]]) -> int:
 
     `jira_key` is likewise never blanked, and `sprint` is not in the update set
     at all — see the module docstring.
+
+    `opened_at` is LEAST, not overwrite, matching git_local's own rule: a case
+    opened at the earliest of its first commit and its first PR, whichever run
+    discovered it. Leaving it out of the update set entirely — which is what
+    this function did until the 0.00-day median exposed it — meant a case
+    git_local had already created kept the merge commit's author date as its
+    opened_at while `closed_at` was overwritten with the PR's. For a squash
+    merge those two are the same instant, which is why 713 cases stored a span
+    of exactly zero while the mapper itself computed none.
+
+    Callers must have merged duplicates already. The guard below turns what
+    Postgres reports as an opaque "ON CONFLICT DO UPDATE command cannot affect
+    row a second time" into a message naming the offending case ids.
     """
     if not rows:
         return 0
-    assert_no_identity(rows)
-    stmt = insert(WorkItem).values(rows)
-    session.execute(
-        stmt.on_conflict_do_update(
-            index_elements=["work_item_id"],
-            set_={
-                "component": func.coalesce(
-                    WorkItem.component, stmt.excluded.component
-                ),
-                "jira_key": func.coalesce(WorkItem.jira_key, stmt.excluded.jira_key),
-                "epic": func.coalesce(WorkItem.epic, stmt.excluded.epic),
-                "closed_at": stmt.excluded.closed_at,
-                "source_ref": stmt.excluded.source_ref,
-            },
+    duplicates = [
+        wid
+        for wid, n in Counter(row["work_item_id"] for row in rows).items()
+        if n > 1
+    ]
+    if duplicates:
+        raise ValueError(
+            f"{len(duplicates)} duplicate work_item_id(s) in one INSERT batch, "
+            f"e.g. {sorted(duplicates)[:5]}. Postgres cannot update the same "
+            "row twice in one statement — merge the group with "
+            "merge_work_items() before calling this."
         )
-    )
+    assert_no_identity(rows)
+    for chunk in _chunked(rows, len(rows[0])):
+        stmt = insert(WorkItem).values(chunk)
+        session.execute(
+            stmt.on_conflict_do_update(
+                index_elements=["work_item_id"],
+                set_={
+                    "component": func.coalesce(
+                        WorkItem.component, stmt.excluded.component
+                    ),
+                    "jira_key": func.coalesce(
+                        WorkItem.jira_key, stmt.excluded.jira_key
+                    ),
+                    "epic": func.coalesce(WorkItem.epic, stmt.excluded.epic),
+                    # LEAST ignores nulls in Postgres, so a case with only one
+                    # of the two dates keeps it.
+                    "opened_at": func.least(
+                        WorkItem.opened_at, stmt.excluded.opened_at
+                    ),
+                    "closed_at": stmt.excluded.closed_at,
+                    "source_ref": stmt.excluded.source_ref,
+                },
+            )
+        )
     return len(rows)
 
 
@@ -624,40 +817,65 @@ def _write_actors(session: Session, events: list[dict[str, Any]]) -> int:
         for digest, stamps in seen.items()
     ]
     assert_no_identity(rows)
-    stmt = insert(Actor).values(rows)
-    session.execute(stmt.on_conflict_do_nothing(index_elements=["actor_hash"]))
+    for chunk in _chunked(rows, len(rows[0])):
+        stmt = insert(Actor).values(chunk)
+        session.execute(stmt.on_conflict_do_nothing(index_elements=["actor_hash"]))
     return len(rows)
 
 
-def _write_events(session: Session, rows: list[dict[str, Any]]) -> int:
+def _write_events(session: Session, rows: list[dict[str, Any]]) -> tuple[int, int]:
+    """Write events. Returns (written, collapsed).
+
+    An event_id collides only when one actor performs the same activity on the
+    same PR in the same second. Measured on apache/kafka that is 5 rows in
+    20,112, all of them one reviewer submitting a batch of review comments,
+    which GitHub records as several `reviews` nodes sharing a `submittedAt`.
+
+    Collapsing them is the right model — one human action at one instant is one
+    event — but the count is RETURNED rather than swallowed, because a silent
+    dedup is indistinguishable from a bug that quietly eats real events.
+    """
     if not rows:
-        return 0
+        return 0, 0
     assert_no_identity(rows)
-    # Deduplicate within the batch: Postgres rejects an ON CONFLICT statement
-    # whose own VALUES hit the same key twice.
-    unique = {row["event_id"]: row for row in rows}
-    stmt = insert(EventLog).values(list(unique.values()))
-    session.execute(stmt.on_conflict_do_nothing(index_elements=["event_id"]))
-    return len(unique)
+    unique = list({row["event_id"]: row for row in rows}.values())
+    for chunk in _chunked(unique, len(unique[0])):
+        stmt = insert(EventLog).values(chunk)
+        session.execute(stmt.on_conflict_do_nothing(index_elements=["event_id"]))
+    return len(unique), len(rows) - len(unique)
 
 
-def _write_ci_runs(session: Session, rows: list[dict[str, Any]]) -> int:
+def _write_ci_runs(session: Session, rows: list[dict[str, Any]]) -> tuple[int, int]:
+    """Write CI runs. Returns (written, collapsed).
+
+    `run_id` is `{repo}:{id}:{attempt}`, so a collision means the same attempt
+    of the same run appeared twice in one batch. The winner is the observation
+    with the most wall-clock time on it rather than whichever happened to be
+    last in the list: a run seen twice is usually seen once mid-flight and once
+    finished, and the finished view is the complete one.
+    """
     if not rows:
-        return 0
+        return 0, 0
     assert_no_identity(rows)
-    unique = {row["run_id"]: row for row in rows}
-    stmt = insert(CiRun).values(list(unique.values()))
-    session.execute(
-        stmt.on_conflict_do_update(
-            index_elements=["run_id"],
-            set_={
-                "work_item_id": stmt.excluded.work_item_id,
-                "conclusion": stmt.excluded.conclusion,
-                "runner_minutes": stmt.excluded.runner_minutes,
-            },
+    unique: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        current = unique.get(row["run_id"])
+        if current is None or row["runner_minutes"] > current["runner_minutes"]:
+            unique[row["run_id"]] = row
+    winners = list(unique.values())
+    for chunk in _chunked(winners, len(winners[0])):
+        stmt = insert(CiRun).values(chunk)
+        session.execute(
+            stmt.on_conflict_do_update(
+                index_elements=["run_id"],
+                set_={
+                    "work_item_id": stmt.excluded.work_item_id,
+                    "conclusion": stmt.excluded.conclusion,
+                    "runner_minutes": stmt.excluded.runner_minutes,
+                },
+            )
         )
-    )
-    return len(unique)
+    return len(winners), len(rows) - len(winners)
 
 
 def _load_commit_events(session: Session) -> list[tuple[str, str, str]]:
@@ -692,6 +910,59 @@ def _apply_repointing(session: Session, updates: list[dict[str, str]]) -> int:
 # =========================================================================
 
 
+def _within_window(
+    bodies: list[dict[str, Any]], stats: Stats, now: datetime | None = None
+) -> list[dict[str, Any]]:
+    """Drop PRs opened before the HISTORY_MONTHS boundary. Counts, never deletes.
+
+    Measured on apache/kafka: 529 of 3,314 landed PRs were opened outside the
+    window, the oldest `apache/kafka#1` from 2012. They are in `raw_payload`
+    because the connector pages by UPDATED_AT and someone commented on them
+    recently - not because the work happened recently. Mapping them:
+
+      * stretched the global sprint grid from ~26 windows to 289, since
+        `assign_sprints` numbers backwards from the newest event to the oldest;
+      * produced 177 of check 2's 239 "merged with no commit" cases, because
+        git_local only clones 12 months so the commit can never be there;
+      * put 2015 timestamps in a log the UI labels a 12-month window.
+
+    THE TEST IS `mergedAt or createdAt`, NOT `createdAt`. That is
+    `github_connector._content_predates_window`'s own rule, restated here so
+    the fetch boundary and the mapping boundary cannot disagree about which
+    PRs belong to the window.
+
+    Filtering on `createdAt` alone was the first version of this function and
+    it was too aggressive: Nishant measured 788 PRs against the live API that
+    were created before the boundary but are still active or completed inside
+    it, carrying 1,403 in-window events and 127 merges. A PR opened in 2023 and
+    merged last month is in-window work, whatever its creation date says.
+
+    What still goes, correctly: a PR both created and merged before the
+    boundary, in `raw_payload` only because someone commented on it recently.
+    Mapping those stretched the global sprint grid from ~26 windows to 289 and
+    produced 177 of check 2's 239 "merged with no commit" cases, since
+    git_local only clones 12 months so the commit cannot be there.
+
+    Both counts are reported: what was skipped, and how many PRs older than the
+    boundary this rule keeps that `createdAt` alone would have dropped.
+    """
+    cutoff = window_cutoff(now)
+    kept: list[dict[str, Any]] = []
+    for body in bodies:
+        created = _ts(body.get("createdAt"))
+        # mergedAt first: it is the stamp that says when the work landed.
+        # Falling back to createdAt keeps an unmerged PR judged on the only
+        # date it has, which is what the connector does.
+        stamp = _ts(body.get("mergedAt")) or created
+        if stamp is not None and stamp < cutoff:
+            stats.prs_outside_window += 1
+            continue
+        if created is not None and created < cutoff:
+            stats.prs_created_before_window_kept += 1
+        kept.append(body)
+    return kept
+
+
 def run(
     session: Session, repos: Sequence[str] | None = None, stats: Stats | None = None
 ) -> Stats:
@@ -701,13 +972,45 @@ def run(
     stats.git_local_skipped = len(payloads.get(GIT_SOURCE, []))
     stats.payloads_read = sum(len(v) for v in payloads.values())
 
-    mapped = [map_pull_request(body, stats) for body in payloads.get(PR_SOURCE, [])]
+    mapped = [
+        map_pull_request(body, stats)
+        for body in _within_window(payloads.get(PR_SOURCE, []), stats)
+    ]
     stats.pull_requests = len(mapped)
 
-    work_items = [m.work_item for m in mapped]
-    events = [e for m in mapped for e in m.events]
+    # Several PRs routinely share one case: Apache files a main PR, its
+    # follow-ups and its backports under one Jira key. Merge them BEFORE the
+    # insert — one row per case is both what Postgres requires and what the
+    # case actually is.
+    by_case: dict[str, list[MappedPR]] = {}
     for m in mapped:
-        stats.case_sources[m.case_source] += 1
+        by_case.setdefault(m.work_item["work_item_id"], []).append(m)
+
+    work_items = [merge_work_items(group) for group in by_case.values()]
+    events = [e for m in mapped for e in m.events]
+
+    stats.cases_merged = sum(1 for group in by_case.values() if len(group) > 1)
+    stats.prs_merged_away = len(mapped) - len(by_case)
+    if by_case:
+        widest = max(by_case.items(), key=lambda kv: len(kv[1]))
+        stats.largest_case = (widest[0], len(widest[1]))
+
+    # Umbrella detection reads the merged rows and writes nothing (see
+    # app/normalise/case_span.py). It runs on what this pass produced, not on
+    # the whole table, so the report describes this run.
+    stats.spans = summarise(
+        [
+            CaseSpan(
+                work_item_id=row["work_item_id"],
+                days=span_days(row["opened_at"], row["closed_at"]),
+                n_prs=len(by_case[row["work_item_id"]]),
+                case_source=row["case_source"],
+            )
+            for row in work_items
+        ]
+    )
+    for row in work_items:
+        stats.case_sources[row["case_source"]] += 1
     for event in events:
         stats.activities[event["activity"]] += 1
 
@@ -730,7 +1033,7 @@ def run(
     stats.commits_repointed = _apply_repointing(session, updates)
     stats.commits_left_alone = left
 
-    stats.events = _write_events(session, events)
+    stats.events, stats.events_collapsed = _write_events(session, events)
 
     # --- workflow runs. Match on head_sha against every commit we know.
     sha_to_case = dict(case_by_sha)
@@ -748,8 +1051,10 @@ def run(
         else:
             stats.runs_unmatched += 1
     stats.workflow_runs = len(ci_rows)
-    stats.ci_runs = _write_ci_runs(session, ci_rows)
-    stats.events += _write_events(session, run_events)
+    stats.ci_runs, stats.ci_runs_collapsed = _write_ci_runs(session, ci_rows)
+    written, collapsed = _write_events(session, run_events)
+    stats.events += written
+    stats.events_collapsed += collapsed
     for event in run_events:
         stats.activities[event["activity"]] += 1
 
@@ -783,6 +1088,51 @@ def _count_orphaned_cases(session: Session) -> int:
     )
 
 
+UMBRELLA_TOP_N = 10
+
+
+def _print_umbrellas(report: SpanReport | None) -> None:
+    """The `is_umbrella` section. Advisory - it changes no row and no rule.
+
+    Printed right under case merging because that is what produces the shape:
+    merging is correct per decision #6, and this says which of its results are
+    work programmes rather than units of work.
+    """
+    if report is None or report.n_cases == 0:
+        return
+
+    print("\n  umbrella cases (computed at read time - NOT a stored column)")
+    print(f"    rule                    span > {report.multiple:g}x median "
+          f"OR >= {report.min_prs} PRs")
+    if report.median_days is None:
+        print("    median case span        n/a - no case has both dates yet")
+    else:
+        print(f"    median case span        {report.median_days:.2f} days  "
+              f"(over {report.n_measurable} closed case(s))")
+    if report.unscalable:
+        print("    span threshold          n/a - nothing to scale, so the span")
+        print("                            half of the rule did not fire")
+    else:
+        print(f"    span threshold          {report.threshold_days:.1f} days")
+
+    share = len(report.umbrellas) / report.n_cases
+    print(f"    is_umbrella = true      {len(report.umbrellas)} of "
+          f"{report.n_cases} cases  ({share:.1%})")
+    print(f"      by span               {len(report.over_span)}")
+    print(f"      by PR count           {len(report.over_pr_count)}")
+
+    if report.umbrellas:
+        print(f"\n    top {min(UMBRELLA_TOP_N, len(report.umbrellas))} by span")
+        print(f"      {'case':<24} {'span_days':>10}  {'prs':>4}  {'case_source':<12}")
+        for case in report.top(UMBRELLA_TOP_N):
+            days = "open" if case.days is None else f"{case.days:.1f}"
+            print(f"      {case.work_item_id[:24]:<24} {days:>10}  "
+                  f"{case.n_prs or 0:>4}  {case.case_source or '':<12}")
+        print("\n    Decision #6 stands - each of these is still one case. The flag")
+        print("    is advisory: cycle-time and cost charts should be able to say")
+        print("    which cases are work programmes rather than units of work.")
+
+
 def _print_report(stats: Stats, dry_run: bool) -> None:
     # ASCII only: the team is on Windows terminals whose default code page
     # turns an em dash into a replacement character.
@@ -797,11 +1147,39 @@ def _print_report(stats: Stats, dry_run: bool) -> None:
     print(f"    pull requests mapped    {stats.pull_requests}")
     print(f"    workflow runs mapped    {stats.workflow_runs}")
 
+    if stats.prs_outside_window or stats.prs_created_before_window_kept:
+        months = get_settings().history_months
+        print(f"\n  the {months}-month window (rule: mergedAt or createdAt,")
+        print("  matching github_connector._content_predates_window)")
+        print(f"    PRs skipped             {stats.prs_outside_window}  "
+              "(created AND merged before it)")
+        print(f"    older PRs kept          {stats.prs_created_before_window_kept}  "
+              "(created before it, landed inside)")
+        print("    Skipped rows stay in raw_payload - the raw layer keeps")
+        print("    everything it fetched. They are only there because the")
+        print("    connector pages by UPDATED_AT, and git_local clones 12")
+        print("    months, so their commits cannot exist either way.")
+
+    print("\n  case merging (several PRs on one ticket key)")
+    print(f"    cases with >1 PR        {stats.cases_merged}")
+    print(f"    PRs folded into them    {stats.prs_merged_away}")
+    if stats.largest_case:
+        case_id, n = stats.largest_case
+        print(f"    largest case            {case_id} ({n} PRs)")
+    print("    full PR set per case is recoverable from event_log.attrs->>'pr';")
+    print("    work_item has no column for a list - see the run notes.")
+
+    _print_umbrellas(stats.spans)
+
     print("\n  rows written")
     print(f"    work_item               {stats.work_items}")
     print(f"    event_log               {stats.events}")
     print(f"    ci_run                  {stats.ci_runs}")
     print(f"    actor                   {stats.actors}")
+    if stats.events_collapsed or stats.ci_runs_collapsed:
+        print(f"    events collapsed        {stats.events_collapsed}  "
+              "(one actor, same activity, same second)")
+        print(f"    ci_runs collapsed       {stats.ci_runs_collapsed}")
 
     print("\n  case_source breakdown (decision #6 fallback chain)")
     total = sum(stats.case_sources.values()) or 1

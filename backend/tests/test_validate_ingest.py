@@ -421,6 +421,97 @@ def test_sprint_windows_print_the_chosen_thresholds():
     assert any("MIN_ITEMS_PER_SPRINT" in line for line in result.detail)
 
 
+# --- check 11: umbrella case spans ----------------------------------------
+#
+# Rows are shaped as Probe.case_spans returns them: (work_item_id,
+# case_source, days_or_None).
+
+
+def _span_row(name: str, days: float | None, source: str = "ticket_key") -> tuple:
+    return (name, source, days)
+
+
+def _typical(n: int = 20) -> list[tuple]:
+    return [_span_row(f"KAFKA-{i}", 3.0) for i in range(n)]
+
+
+def test_case_spans_pass_when_nothing_is_an_outlier():
+    result = vi.evaluate_case_spans(_typical())
+    assert result.status == vi.PASS
+    assert "30.0 days" in result.headline
+
+
+def test_case_spans_warn_never_fail():
+    """The whole point of check 11: this is a property of open-source data,
+    not a pipeline bug, so it must not block a build."""
+    rows = _typical() + [_span_row("KAFKA-14133", 520.0)]
+    result = vi.evaluate_case_spans(rows)
+    assert result.status == vi.WARN
+    assert vi.exit_code([result]) == 0
+
+
+def test_case_spans_report_the_count_and_the_ticket_keys():
+    rows = _typical() + [
+        _span_row("KAFKA-14133", 520.0),
+        _span_row("KAFKA-10199", 480.0),
+    ]
+    result = vi.evaluate_case_spans(rows)
+    assert "2 of 22 cases" in result.headline
+    keys = [row[0] for row in result.table]
+    assert keys == ["KAFKA-14133", "KAFKA-10199"], "longest span first"
+
+
+def test_case_spans_show_at_most_ten_and_say_how_many_were_hidden():
+    rows = _typical() + [_span_row(f"KAFKA-9{i:03d}", 400.0 + i) for i in range(15)]
+    result = vi.evaluate_case_spans(rows)
+    assert len(result.table) == vi.UMBRELLA_TOP_N
+    assert any("top 10" in line and "15 flagged" in line for line in result.detail)
+
+
+def test_case_spans_print_the_multiple_and_the_median():
+    result = vi.evaluate_case_spans(_typical() + [_span_row("KAFKA-1", 900.0)])
+    text = " ".join(result.detail)
+    assert "10x the median" in text
+    assert "3.00 days" in text
+
+
+def test_case_spans_honour_a_custom_multiple():
+    # median 3 days, so the case sits under 10x (30d) and over 5x (15d).
+    rows = _typical() + [_span_row("KAFKA-1", 25.0)]
+    assert vi.evaluate_case_spans(rows, multiple=10.0).status == vi.PASS
+    assert vi.evaluate_case_spans(rows, multiple=5.0).status == vi.WARN
+
+
+def test_case_spans_are_vacuous_before_the_pr_mapper_runs():
+    """git_local's provisional cases carry an opened_at and no closed_at, so
+    there is no median. That must read as unproven, not as passed."""
+    rows = [_span_row(f"apache/kafka@{i}", None, "pr") for i in range(50)]
+    result = vi.evaluate_case_spans(rows)
+    assert result.status == vi.WARN
+    assert "VACUOUS" in result.headline
+
+
+def test_case_spans_are_vacuous_on_an_empty_table():
+    result = vi.evaluate_case_spans([])
+    assert result.status == vi.WARN
+    assert "VACUOUS" in result.headline
+
+
+def test_case_spans_say_decision_six_is_unchanged():
+    """A reader seeing this warning must not conclude the merge rule is wrong."""
+    result = vi.evaluate_case_spans(_typical() + [_span_row("KAFKA-1", 900.0)])
+    assert any("Decision #6 stands" in line for line in result.detail)
+
+
+def test_case_spans_use_the_shared_rule_not_a_local_copy():
+    """If this check and the mapper ever disagree about what an umbrella is,
+    the two reports contradict each other on stage."""
+    from app.normalise import case_span
+
+    assert vi.UMBRELLA_SPAN_MULTIPLE is case_span.UMBRELLA_SPAN_MULTIPLE
+    assert vi.summarise is case_span.summarise
+
+
 # --- exit codes and rendering ---------------------------------------------
 
 
@@ -471,7 +562,7 @@ def test_full_run_against_a_live_database(pg_engine):
     with engine.connect() as conn:
         results = vi.run_checks(vi.Probe(conn), schema_sql, app_engine=False)
 
-    assert [r.number for r in results] == list(range(1, 11))
+    assert [r.number for r in results] == list(range(1, 12))
     assert all(r.status in {vi.PASS, vi.FAIL, vi.WARN, vi.SKIP} for r in results)
     vi.render(results, label).encode("ascii")
 

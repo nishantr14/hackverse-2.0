@@ -6,11 +6,16 @@ Phase: Tier 0. Nobody builds a view on top of this data until it passes.
 
     python scripts/validate_ingest.py
 
-Ten checks. Exit codes:
+Eleven checks. Exit codes:
 
     0  every check passed (warnings are allowed)
     1  at least one check FAILED — do not build on this data
     2  nothing failed, but some checks could not run
+
+Check 11 is the only one that can never fail. It reports a property of the
+data — cases whose span is an order of magnitude past the median, which on
+Apache repos means an umbrella ticket — not a defect in the pipeline. Blocking
+a build on it would block it on something no code change fixes.
 
 WHY THIS USES THE WRITE ROLE
 ----------------------------
@@ -31,13 +36,19 @@ exists to prove what the API can see, not to validate an ingest.
 
 WHAT IS A JUDGEMENT CALL HERE
 -----------------------------
-Three thresholds are ours, not the schema's. Each is a module constant and is
-printed in the output next to the number it judges, so nobody has to read this
-file to know what "enough" meant:
+Four thresholds are ours, not the schema's. Each is printed in the output next
+to the number it judges, so nobody has to read this file to know what "enough"
+meant:
 
     MIN_ITEMS_PER_SPRINT        what makes a sprint window trainable
     MIN_SPRINTS_FOR_TRAINING    how many such windows the forecaster needs
     MIN_REVIEW_LATENCY_COVERAGE what fraction of work items must have one
+    UMBRELLA_SPAN_MULTIPLE      how far past the median span is "a programme"
+
+The last one lives in `app.normalise.case_span`, not here, because the mapper's
+run report applies the same rule and the two must not drift. `--span-multiple`
+overrides it for one run. It is not a Settings field: `app/config.py` is
+Nishant's, and one field per key in .env.example is his discipline to change.
 
 The vocabulary in check 4 and the source enum in check 5 are NOT judgement
 calls: both are parsed out of docs/schema.sql at run time rather than copied
@@ -60,6 +71,7 @@ sys.path.insert(0, str(REPO_ROOT / "backend"))
 from app.config import get_settings
 from app.db.session import READ_ONLY_CONNECT_ARGS, get_read_engine
 from app.ingestion.pseudonymize import IdentityLeak, assert_no_identity
+from app.normalise.case_span import UMBRELLA_SPAN_MULTIPLE, CaseSpan, summarise
 from sqlalchemy import Connection, Engine, create_engine, text
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -83,6 +95,10 @@ MIN_REVIEW_LATENCY_COVERAGE = 0.40
 #: How many offending ids to print before truncating. Check 2 is exempt: if
 #: the commit-to-PR mapping is broken, the full list IS the deliverable.
 SAMPLE_LIMIT = 20
+
+#: Check 11 prints the worst offenders, not all of them - the count is the
+#: finding, the list is the evidence.
+UMBRELLA_TOP_N = 10
 
 # --- row-count expectations ----------------------------------------------
 # `required` means an empty table is a FAIL: without it there is no product.
@@ -278,6 +294,23 @@ class Probe:
         return self.rows(
             "SELECT sprint, count(*) AS n_items FROM v_case_sequence "
             "WHERE sprint IS NOT NULL GROUP BY sprint ORDER BY sprint"
+        )
+
+    # -- check 11
+    def case_spans(self) -> list[tuple]:
+        """Every case, with its span in days or null when it has not closed.
+
+        Open cases are returned rather than filtered out: they are part of the
+        denominator ("173 of 2,562"), and dropping them here would make the
+        share of umbrella cases look larger than it is.
+        """
+        return self.rows(
+            """
+            SELECT work_item_id, case_source,
+                   extract(epoch FROM (closed_at - opened_at)) / 86400.0 AS days
+            FROM work_item
+            ORDER BY work_item_id
+            """
         )
 
 
@@ -715,6 +748,118 @@ def evaluate_sprint_windows(rows: Sequence[tuple]) -> CheckResult:
     )
 
 
+def evaluate_case_spans(
+    rows: Sequence[tuple], multiple: float = UMBRELLA_SPAN_MULTIPLE
+) -> CheckResult:
+    """Check 11 - the umbrella guard. WARN at worst, never FAIL.
+
+    This is a property of open-source data, not a pipeline bug. Decision #6
+    says a shared ticket key is one case, and Apache files main PRs, follow-ups
+    and backports under one key - so `KAFKA-14133` is one case spanning 17
+    months. The mapping is doing exactly what it was told to. Failing the
+    ingest over it would block a build on something no code change can fix.
+
+    What it IS is a warning to whoever reads cycle time next: a handful of
+    cases are work programmes, and they sit in the same distribution as
+    everything else. The rule lives in app.normalise.case_span so this check
+    and the mapper's run report cannot drift apart.
+
+    Only the span half of the rule fires here. `work_item` keeps one
+    `source_ref` and no list of PR numbers, so this check cannot know how many
+    PRs a case holds; the mapper can, and reports both halves.
+    """
+    cases = [
+        CaseSpan(
+            work_item_id=str(r[0]),
+            days=None if r[2] is None else float(r[2]),
+            n_prs=None,
+            case_source=None if r[1] is None else str(r[1]),
+        )
+        for r in rows
+    ]
+    report = summarise(cases, multiple=multiple)
+    name = "Umbrella case spans"
+
+    if not cases:
+        return CheckResult(
+            11, name, WARN, "VACUOUS: work_item is empty, so there is no span "
+            "distribution to judge"
+        )
+    if report.unscalable:
+        return CheckResult(
+            11,
+            name,
+            WARN,
+            (
+                "VACUOUS: no case has both an opened_at and a closed_at, so "
+                "there is no median to scale"
+            ),
+            (
+                (
+                    f"{report.n_cases:,} case(s), {report.n_measurable} with a "
+                    "measurable span."
+                ),
+                (
+                    "Before the PR mapper runs, cases are provisional and carry "
+                    "an opened_at only. Treat this as unproven, not as passed."
+                ),
+            ),
+        )
+
+    detail = [
+        (
+            f"rule: span > {multiple:g}x the median case span "
+            f"(UMBRELLA_SPAN_MULTIPLE, --span-multiple)"
+        ),
+        (
+            f"median = {report.median_days:.2f} days over {report.n_measurable:,} "
+            f"closed case(s)  ->  threshold {report.threshold_days:.1f} days"
+        ),
+        "",
+        "Decision #6 stands: a shared ticket key is one case, and that is not",
+        "changed by this check. These cases are real, and merging them was",
+        "correct - but their cycle time is a work-programme duration, so any",
+        "average that includes them is describing two different things at once.",
+    ]
+
+    if not report.over_span:
+        return CheckResult(
+            11,
+            name,
+            PASS,
+            f"no case exceeds {report.threshold_days:.1f} days "
+            f"({multiple:g}x the {report.median_days:.2f}-day median)",
+            tuple(detail),
+        )
+
+    table = tuple(
+        (
+            case.work_item_id,
+            f"{case.days:,.1f}",
+            f"{case.days / report.median_days:,.0f}x",
+            case.case_source or "",
+        )
+        for case in report.over_span[:UMBRELLA_TOP_N]
+    )
+    if len(report.over_span) > UMBRELLA_TOP_N:
+        detail.append(
+            f"showing the top {UMBRELLA_TOP_N} by span of "
+            f"{len(report.over_span):,} flagged."
+        )
+    return CheckResult(
+        11,
+        name,
+        WARN,
+        (
+            f"{len(report.over_span):,} of {report.n_cases:,} cases span more "
+            f"than {report.threshold_days:.1f} days ({multiple:g}x median)"
+        ),
+        tuple(detail),
+        table,
+        ("work_item_id", "span_days", "vs median", "case_source"),
+    )
+
+
 def _sample(values: Sequence[str]) -> list[str]:
     shown = [f"  {v}" for v in values[:SAMPLE_LIMIT]]
     if len(values) > SAMPLE_LIMIT:
@@ -727,7 +872,13 @@ def _sample(values: Sequence[str]) -> list[str]:
 # =========================================================================
 
 
-def run_checks(probe: Probe, schema_sql: str, *, app_engine: bool) -> list[CheckResult]:
+def run_checks(
+    probe: Probe,
+    schema_sql: str,
+    *,
+    app_engine: bool,
+    span_multiple: float = UMBRELLA_SPAN_MULTIPLE,
+) -> list[CheckResult]:
     settings = get_settings()
     results: list[CheckResult] = []
 
@@ -789,6 +940,11 @@ def run_checks(probe: Probe, schema_sql: str, *, app_engine: bool) -> list[Check
 
     results.append(evaluate_review_latency(*probe.review_latency_coverage()))
     results.append(evaluate_sprint_windows(probe.items_per_sprint()))
+
+    if app_engine:
+        results.append(skipped(11, "Umbrella case spans"))
+    else:
+        results.append(evaluate_case_spans(probe.case_spans(), span_multiple))
     return results
 
 
@@ -902,8 +1058,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         "(default). app: the esi_app read engine, view surface only - base-table "
         "checks report SKIP.",
     )
+    parser.add_argument(
+        "--span-multiple",
+        type=float,
+        default=UMBRELLA_SPAN_MULTIPLE,
+        metavar="N",
+        help="check 11: flag cases whose span exceeds N times the median case "
+        f"span (default {UMBRELLA_SPAN_MULTIPLE:g}). Warns, never fails.",
+    )
     args = parser.parse_args(argv)
     app_engine = args.engine == "app"
+    if args.span_multiple <= 0:
+        print("FATAL: --span-multiple must be positive.", file=sys.stderr)
+        return 1
 
     if not SCHEMA_PATH.exists():
         print(f"FATAL: {SCHEMA_PATH} is missing - it is the contract.", file=sys.stderr)
@@ -913,7 +1080,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     engine, label = build_engine(app_engine)
     try:
         with engine.connect() as conn:
-            results = run_checks(Probe(conn), schema_sql, app_engine=app_engine)
+            results = run_checks(
+                Probe(conn),
+                schema_sql,
+                app_engine=app_engine,
+                span_multiple=args.span_multiple,
+            )
     except SQLAlchemyError as exc:
         print(
             f"FATAL: cannot query the database as {label}.\n  {type(exc).__name__}: {exc}\n"
