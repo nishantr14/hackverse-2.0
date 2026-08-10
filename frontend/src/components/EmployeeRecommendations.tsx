@@ -1,7 +1,13 @@
 import { motion } from 'framer-motion';
 
 import { GlassCard } from './GlassCard';
-import { SHIFT_LABEL, WEEKDAY_LABEL, WORK_AREA_LABEL } from '../lib/workforce';
+import {
+  FIT_DIMENSION_SHORT_LABEL,
+  FIT_DIMENSIONS,
+  SHIFT_LABEL,
+  WEEKDAY_LABEL,
+  WORK_AREA_LABEL,
+} from '../lib/workforce';
 import type { EmployeeRecommendation, FitDimension, WorkforceRecommendationSet } from '../data/types';
 
 /**
@@ -18,21 +24,9 @@ import type { EmployeeRecommendation, FitDimension, WorkforceRecommendationSet }
  * their resume says.
  */
 
-const DIMENSION_LABEL: Record<FitDimension, string> = {
-  skillMatch: 'Skills',
-  experienceMatch: 'Experience',
-  preferenceMatch: 'Preferences',
-  availabilityMatch: 'Availability',
-  projectFamiliarity: 'Familiarity',
-};
-
-const ORDER: FitDimension[] = [
-  'skillMatch',
-  'experienceMatch',
-  'preferenceMatch',
-  'availabilityMatch',
-  'projectFamiliarity',
-];
+// Labels and order come from lib/workforce so the PDF export renders the
+// same five dimensions under the same names. A local copy here is how a
+// printed page and the card it was exported from start disagreeing.
 
 function Bar({ value, max }: { value: number; max: number }) {
   const pct = max > 0 ? Math.max(0, Math.min(1, value / max)) : 0;
@@ -101,10 +95,10 @@ function Card({
             dimension's share of the headline, drawn against its own weight so
             a full 10% term looks full rather than small. */}
         <div className="mt-4 space-y-1.5">
-          {ORDER.map((dim) => (
+          {FIT_DIMENSIONS.map((dim) => (
             <div key={dim} className="flex items-center gap-2">
               <span className="w-[5.5rem] text-[11px] text-[var(--text-secondary)]">
-                {DIMENSION_LABEL[dim]}
+                {FIT_DIMENSION_SHORT_LABEL[dim]}
               </span>
               <Bar value={rec.contributions[dim]} max={weights[dim]} />
               <span className="tnum w-9 text-right text-[11px] text-[var(--text-secondary)]">

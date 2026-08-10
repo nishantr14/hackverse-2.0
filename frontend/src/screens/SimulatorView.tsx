@@ -347,7 +347,14 @@ export function SimulatorView() {
                       // for yet.
                       onClick={async () => {
                         const { exportScenarioPdf } = await import('../lib/exportPdf');
-                        exportScenarioPdf({ input: state.result.input, output: state.result.output });
+                        // The recommendations go WITH the scenario or the
+                        // export is a page of numbers whose whole point —
+                        // which people, on what basis — was left on screen.
+                        exportScenarioPdf({
+                          input: state.result.input,
+                          output: state.result.output,
+                          workforce,
+                        });
                       }}
                       className="flex h-9 items-center gap-1.5 rounded-lg border px-4 text-[13px] transition-colors"
                       style={{ color: 'var(--text-secondary)', borderColor: 'var(--border)' }}
@@ -568,11 +575,17 @@ export function SimulatorView() {
               style={{ borderColor: 'var(--border)' }}
             >
               <p className="text-[12px] leading-relaxed text-[var(--text-primary)]">
-                Scenarios, not decisions. A human reviews every reallocation.
+                {workforce
+                  ? 'Recommendations, not decisions. Nobody is moved until they are asked and agree.'
+                  : 'Scenarios, not decisions. A human reviews every reallocation.'}
               </p>
+              {/* Per mode, not global. "No individual is named anywhere" is
+                  true of capacity mode and is a visible lie directly beneath a
+                  list of four names. */}
               <p className="text-[12px] text-[var(--text-secondary)]">
-                All figures computed from the event log. No individual is named or scored anywhere
-                in this product.
+                {workforce
+                  ? 'Delivery figures from the event log, which stays pseudonymised. People are named only from what they volunteered, never joined to it.'
+                  : 'All figures computed from the event log. No individual is named or scored anywhere on this screen.'}
               </p>
             </div>
           </div>

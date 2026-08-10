@@ -22,6 +22,7 @@ import {
   FIT_DIMENSION_BASIS,
   FIT_DIMENSION_LABEL,
   FIT_DIMENSIONS,
+  fitPoints,
 } from '../lib/workforce';
 import type {
   Candidate,
@@ -419,22 +420,14 @@ export function toRecommendation(
  * would read as the arithmetic not adding up.
  */
 export function toContributions(rec: EmployeeRecommendation): FitContribution[] {
-  const raw = FIT_DIMENSIONS.map((d) => ({ d, exact: rec.contributions[d] * 100 }));
-  const floors = raw.map((r) => ({ ...r, points: Math.floor(r.exact) }));
-  let short = rec.matchPercent - floors.reduce((sum, r) => sum + r.points, 0);
-
-  // Hand the leftover points to the largest fractional parts, so the set sums
-  // to exactly the percentage shown next to the name.
-  for (const r of [...floors].sort((a, b) => b.exact - b.points - (a.exact - a.points))) {
-    if (short <= 0) break;
-    r.points += 1;
-    short -= 1;
-  }
-
-  return floors.map((r) => ({
-    label: FIT_DIMENSION_LABEL[r.d],
-    points: r.points,
-    basis: FIT_DIMENSION_BASIS[r.d],
+  // The arithmetic is `fitPoints` in lib/workforce, shared with the PDF
+  // export so a printed page and this card cannot round the same five terms
+  // two different ways.
+  const points = fitPoints(rec);
+  return FIT_DIMENSIONS.map((d) => ({
+    label: FIT_DIMENSION_LABEL[d],
+    points: points[d],
+    basis: FIT_DIMENSION_BASIS[d],
   }));
 }
 

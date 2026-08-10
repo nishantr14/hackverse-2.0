@@ -1,7 +1,13 @@
 import { jsPDF } from 'jspdf';
-import type { SimulatorInput, SimulatorOutput } from '../data/types';
+import type {
+  EmployeeRecommendation,
+  SimulatorInput,
+  SimulatorOutput,
+  WorkforceRecommendationSet,
+} from '../data/types';
 import { formatWeekDelta } from './format';
 import { bandVerdict, confidenceShape } from './simulator';
+import { FIT_DIMENSION_SHORT_LABEL, FIT_DIMENSIONS, fitPoints } from './workforce';
 
 /**
  * One-page PDF export of a run scenario result.
@@ -44,6 +50,72 @@ const LAKH = 100_000;
 const CRORE = 10_000_000;
 const inr = new Intl.NumberFormat('en-IN', { maximumFractionDigits: 0 });
 
+/**
+ * Typographic characters this document cannot render, and what to print
+ * instead. See the file header for why: jsPDF's built-in fonts carry WinAnsi
+ * and nothing else.
+ */
+const ASCII_FALLBACK: Record<string, string> = {
+  '—': '-', // em dash; spacing is normalised below
+  '–': '-', // en dash
+  '−': '-', // true minus
+  '‘': "'",
+  '’': "'",
+  '“': '"',
+  '”': '"',
+  '…': '...',
+  '×': 'x',
+  '₹': 'Rs.',
+  '→': '->',
+  '·': '-',
+  '✓': '+', // check
+  '⚠': '!', // warning
+  '±': '+/-',
+};
+
+/**
+ * Makes a backend string safe to print.
+ *
+ * EVERY STRING THAT CAME FROM THE API GOES THROUGH THIS. The literals in this
+ * file were written ASCII-only by hand, but `rampUpNote`, `dataBasis.note`,
+ * a candidate's reasons and an exclusion reason are all composed server-side
+ * and none of them is under this file's control. `rampUpNote` has carried an
+ * em dash since it was written.
+ *
+ * Accents are folded rather than replaced (NFD, then combining marks dropped),
+ * so a name like Ramirez survives as Ramirez instead of Ram?rez. That covers
+ * Latin scripts and nothing else.
+ *
+ * WHAT A NON-LATIN NAME ACTUALLY DOES, MEASURED RATHER THAN ASSUMED. Devanagari
+ * and CJK names were put through the real export and the file was opened:
+ *
+ *     "आरती वेंकटेश"  ->  "???? ???????"
+ *     "王小明"          ->  "???"
+ *
+ * One '?' per surviving code point. It DEGRADES, it does not throw and it does
+ * not corrupt the file — the page renders, the layout holds, the row keeps its
+ * employeeId, its score and its reasons, so the record stays traceable through
+ * the workforce store even when the name is unreadable.
+ *
+ * That is an accepted limit for now, not a solved problem, and it is worse
+ * than it looks on a page whose whole purpose is naming people: an unreadable
+ * name in a staffing document is a person who cannot be identified by the
+ * human who has to make the decision, and the length of the run of '?'
+ * still leaks how long their name was. Embedding a Unicode font (jsPDF
+ * `addFileToVFS` + `addFont` with a subset of Noto) is the fix when this data
+ * stops being an ASCII-only seed.
+ */
+function ascii(text: string): string {
+  return text
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .replace(/[^\x20-\x7E\n]/g, (ch) => ASCII_FALLBACK[ch] ?? '?')
+    // A substituted glyph often already had spaces around it, so a naive
+    // replacement leaves "streams  -  the destination". Collapse afterwards
+    // rather than guessing per-character.
+    .replace(/ {2,}/g, ' ');
+}
+
 function trim(n: number, places: number): string {
   return n.toFixed(places).replace(/\.0+$/, '');
 }
@@ -68,12 +140,28 @@ function rupeesExact(rupees: number): string {
 interface ExportOptions {
   input: SimulatorInput;
   output: SimulatorOutput;
+  /**
+   * Present only when the scenario was run in NAMED mode.
+   *
+   * When it is present it is not optional to print it. A page carrying
+   * people's names has to carry, on the same page, what the profiles behind
+   * those names actually are (modelled, not submitted) and who could not be
+   * named at all. On screen those sit a scroll away and the reader can go
+   * find them; a PDF is read somewhere else entirely, by someone who cannot,
+   * so the provenance travels with the names or the names do not go.
+   */
+  workforce?: WorkforceRecommendationSet | null;
   /** e.g. "Engineering Spend Intelligence" — printed small, top right. */
   productName?: string;
 }
 
 /** Builds the document without saving it — split out so it's testable headless. */
-export function buildScenarioDoc({ input, output, productName = 'Engineering Spend Intelligence' }: ExportOptions) {
+export function buildScenarioDoc({
+  input,
+  output,
+  workforce = null,
+  productName = 'Engineering Spend Intelligence',
+}: ExportOptions) {
   const doc = new jsPDF({ unit: 'mm', format: 'a4' });
   const costs = output.netCostRupees > 0;
   const tone = costs ? CORAL : TEAL;
@@ -221,9 +309,22 @@ export function buildScenarioDoc({ input, output, productName = 'Engineering Spe
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(11);
   setColor(INK);
-  const confLine = `${verdictLabel} - P10-P90 ${output.confidenceLow}-${output.confidenceHigh}%${
-    output.confidencePercent !== undefined ? ` (${output.confidencePercent}%)` : ''
-  }`;
+  /**
+   * NEVER "±<confidencePercent>%".
+   *
+   * That field is a confidence LEVEL (`100 - spread`), and the width is
+   * `confidenceHigh - confidenceLow`. Three screens conflated the two; this
+   * page did not, and the wording below keeps it that way by naming both
+   * quantities rather than leaving a bare parenthetical for a reader to
+   * interpret. On paper there is nobody to ask what "(54%)" meant.
+   */
+  const confLine =
+    `${verdictLabel} - P10-P90 ${output.confidenceLow}-${output.confidenceHigh}% ` +
+    `(${trim(conf.spread, 1)} points wide)${
+      output.confidencePercent !== undefined
+        ? `, ${output.confidencePercent}% confidence`
+        : ''
+    }`;
   doc.text(confLine, MARGIN, y);
   y += 7;
 
@@ -253,8 +354,10 @@ export function buildScenarioDoc({ input, output, productName = 'Engineering Spe
   if (output.rampUpPenaltyApplied) {
     doc.setDrawColor(AMBER[0], AMBER[1], AMBER[2]);
     doc.setFillColor(252, 246, 233);
+    // Sanitised: the backend composes this note and it has always contained
+    // an em dash, which is not in this document's glyph set.
     const noteText = doc.splitTextToSize(
-      output.rampUpNote ?? 'Limited experience in this component - adjustment applied.',
+      ascii(output.rampUpNote ?? 'Limited experience in this component - adjustment applied.'),
       CONTENT_W - 16,
     );
     const boxH = 10 + noteText.length * 4.6;
@@ -274,35 +377,273 @@ export function buildScenarioDoc({ input, output, productName = 'Engineering Spe
     y += boxH + 8;
   }
 
-  // Footer — pinned to the bottom of the page, not wherever content happens to end
-  const footerY = 297 - MARGIN;
-  rule(footerY - 12);
-  doc.setFont('helvetica', 'italic');
-  doc.setFontSize(9);
-  setColor(INK);
-  doc.text('Scenarios, not decisions. A human reviews every reallocation.', MARGIN, footerY - 6);
+  /**
+   * The footer, and it is DIFFERENT in named mode.
+   *
+   * It read "No individual is named or scored anywhere in this product" on
+   * every page. That was true when it was written and stopped being true the
+   * day named mode shipped — and the worst place for it to be false is a
+   * printed page that names four people directly above it. The claim is
+   * per-mode now, the same way the sidebar's privacy note is per route.
+   */
+  const footer = (named: boolean) => {
+    const footerY = 297 - MARGIN;
+    rule(footerY - 12);
+    doc.setFont('helvetica', 'italic');
+    doc.setFontSize(9);
+    setColor(INK);
+    doc.text(
+      named
+        ? 'Recommendations, not decisions. Nobody is moved until they are asked and agree.'
+        : 'Scenarios, not decisions. A human reviews every reallocation.',
+      MARGIN,
+      footerY - 6,
+    );
 
-  doc.setFont('helvetica', 'normal');
-  doc.setFontSize(7.5);
-  setColor(MUTED);
-  doc.text(
-    'All figures computed from the event log. No individual is named or scored anywhere in this product.',
-    MARGIN,
-    footerY - 1,
-  );
-  doc.text(
-    `Generated ${new Date().toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' })}`,
-    PAGE_W - MARGIN,
-    footerY - 1,
-    { align: 'right' },
-  );
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(7.5);
+    setColor(MUTED);
+    doc.text(
+      named
+        ? 'Delivery figures from the event log, which is pseudonymised and carries no per-person measure. People are named only from a preference form and a resume, never joined to it.'
+        : 'All figures computed from the event log. No individual is named or scored anywhere in this export.',
+      MARGIN,
+      footerY - 1,
+      { maxWidth: CONTENT_W - 42 },
+    );
+    doc.text(
+      `Generated ${new Date().toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' })}`,
+      PAGE_W - MARGIN,
+      footerY - 1,
+      { align: 'right' },
+    );
+  };
+
+  /**
+   * BOTH pages get the named footer when the document is a named one.
+   *
+   * The claim is about "this export", and a two-page export is one document:
+   * page 1 saying nobody is named while page 2 lists four people is the same
+   * false denial this footer was split to remove, just moved one page up. A
+   * page can also be printed, cropped or forwarded on its own, so each has to
+   * be true by itself.
+   */
+  const isNamed = Boolean(workforce);
+  footer(isNamed);
+
+  if (workforce) {
+    doc.addPage();
+    peoplePage(doc, workforce, { rule, setColor });
+    footer(true);
+  }
 
   return doc;
 }
 
+/**
+ * Page two: who the engine proposed, and everything that qualifies it.
+ *
+ * ORDER IS THE ARGUMENT, and it is deliberately not the screen's. On screen
+ * the names come first and the provenance badge sits beside them, because a
+ * reader can see both at once. On paper the page is scanned top-down and may
+ * be photographed, cropped or read over someone's shoulder, so what these
+ * profiles ARE goes above the first name rather than beside it. A reader who
+ * gets one paragraph in has already been told the profiles are modelled.
+ */
+function peoplePage(
+  doc: jsPDF,
+  set: WorkforceRecommendationSet,
+  ctx: { rule: (y: number) => void; setColor: (rgb: readonly number[]) => void },
+) {
+  const { rule, setColor } = ctx;
+  let y = MARGIN;
+
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(9);
+  setColor(MUTED);
+  doc.text('SIMULATOR - RECOMMENDED PEOPLE', MARGIN, y);
+  y += 10;
+
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(17);
+  setColor(INK);
+  doc.text('Who the engine proposed', MARGIN, y);
+  y += 6;
+
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(10);
+  setColor(MUTED);
+  const req = set.requirement;
+  doc.text(
+    ascii(
+      `${req.project} / ${req.component} - ${req.engineersRequired} engineer` +
+        `${req.engineersRequired === 1 ? '' : 's'}. Ranked on ${req.requiredSkills.join(', ')}.`,
+    ),
+    MARGIN,
+    y,
+    { maxWidth: CONTENT_W },
+  );
+  y += 10;
+
+  // --- the label, above the first name, impossible to crop off with one ----
+  const basisText = doc.splitTextToSize(
+    ascii(`${set.dataBasis.label}. ${set.dataBasis.note}`),
+    CONTENT_W - 12,
+  );
+  const basisH = 8 + basisText.length * 4.4;
+  doc.setDrawColor(AMBER[0], AMBER[1], AMBER[2]);
+  doc.setFillColor(252, 246, 233);
+  doc.roundedRect(MARGIN, y, CONTENT_W, basisH, 1.5, 1.5, 'FD');
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(8.5);
+  setColor(INK);
+  doc.text(basisText, MARGIN + 6, y + 6);
+  y += basisH + 6;
+
+  // --- the consent gate, stated and counted -------------------------------
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(9);
+  setColor(INK);
+  doc.text('WHO CAN BE NAMED', MARGIN, y);
+  y += 5;
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(8.5);
+  setColor(MUTED);
+  const gate = doc.splitTextToSize(
+    ascii(
+      `${set.privacyBasis} ${set.anonymousCapacity.count} further ` +
+        `profile${set.anonymousCapacity.count === 1 ? '' : 's'} could not be named here. ` +
+        set.anonymousCapacity.note,
+    ),
+    CONTENT_W,
+  );
+  doc.text(gate, MARGIN, y);
+  y += gate.length * 4.2 + 6;
+  rule(y);
+  y += 8;
+
+  // --- the people ---------------------------------------------------------
+  const person = (rec: EmployeeRecommendation, rank: number, alternate: boolean) => {
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(alternate ? 10 : 12);
+    setColor(INK);
+    doc.text(`${rank}. ${ascii(rec.name)}`, MARGIN, y);
+
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(8.5);
+    setColor(MUTED);
+    doc.text(ascii(rec.employeeId), MARGIN + 58, y);
+
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(alternate ? 10 : 12);
+    setColor(TEAL);
+    doc.text(`${rec.matchPercent}%`, PAGE_W - MARGIN, y, { align: 'right' });
+    y += 5;
+
+    /**
+     * The five terms, rounded exactly as the card rounds them.
+     *
+     * `fitPoints` is largest-remainder, so these integers sum to the
+     * percentage printed beside the name — and the sum is printed too. This
+     * page asserts in words that the terms sum to the score; before, it
+     * rounded each term to 1dp independently and printed 87.4 next to an 87%
+     * headline, so the document disproved its own sentence. On paper nobody
+     * can hover for the exact figures, which is why the total is spelled out
+     * rather than left to be added up.
+     */
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(8);
+    setColor(MUTED);
+    const points = fitPoints(rec);
+    const terms = FIT_DIMENSIONS.map(
+      (d) =>
+        `${FIT_DIMENSION_SHORT_LABEL[d]} ${Math.round(rec.subScores[d] * 100)}%` +
+        ` (+${points[d]} pts)`,
+    ).join('   ');
+    doc.text(terms, MARGIN, y, { maxWidth: CONTENT_W });
+    y += 4.6;
+
+    const total = FIT_DIMENSIONS.reduce((sum, d) => sum + points[d], 0);
+    doc.text(`Sums to ${total}% - the score beside the name.`, MARGIN, y);
+    y += 4.6;
+
+    if (!alternate) {
+      setColor(INK);
+      doc.setFontSize(8.5);
+      for (const line of [...rec.reasons.map((r) => `+ ${r}`), ...rec.flags.map((f) => `! ${f}`)]) {
+        const wrapped = doc.splitTextToSize(ascii(line), CONTENT_W - 4);
+        doc.text(wrapped, MARGIN + 2, y);
+        y += wrapped.length * 4.1;
+      }
+    }
+    y += 4;
+  };
+
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(9);
+  setColor(INK);
+  doc.text('RECOMMENDED', MARGIN, y);
+  y += 6;
+  set.recommendedEmployees.forEach((rec, i) => person(rec, i + 1, false));
+
+  if (set.alternates.length) {
+    y += 2;
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(9);
+    setColor(INK);
+    doc.text('ALTERNATES', MARGIN, y);
+    y += 6;
+    set.alternates.forEach((rec, i) =>
+      person(rec, set.recommendedEmployees.length + i + 1, true),
+    );
+  }
+
+  // --- excluded, which is not the same as ranked last ---------------------
+  if (set.excluded.length) {
+    rule(y);
+    y += 7;
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(9);
+    setColor(INK);
+    doc.text('EXCLUDED ON A STATED BOUNDARY, NOT DOWN-RANKED', MARGIN, y);
+    y += 5;
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(8.5);
+    setColor(MUTED);
+    for (const e of set.excluded) {
+      const wrapped = doc.splitTextToSize(ascii(`${e.name} - ${e.reason}`), CONTENT_W);
+      doc.text(wrapped, MARGIN, y);
+      y += wrapped.length * 4.2;
+    }
+    y += 6;
+  }
+
+  // --- how the number was arrived at --------------------------------------
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(9);
+  setColor(INK);
+  doc.text('HOW THE FIT WAS SCORED', MARGIN, y);
+  y += 5;
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(8.5);
+  setColor(MUTED);
+  const method = doc.splitTextToSize(
+    ascii(
+      `${set.explanationMethod} No cycle time, throughput, review count or items ` +
+        'merged is used, and nobody is ranked against a colleague on anything observed. ' +
+        `${set.humanInTheLoop.note}`,
+    ),
+    CONTENT_W,
+  );
+  doc.text(method, MARGIN, y);
+}
+
 export function exportScenarioPdf(opts: ExportOptions) {
   const doc = buildScenarioDoc(opts);
-  const fileName = `scenario-${opts.input.sourceProject}-${opts.input.destProject}-${opts.input.engineerCount}eng`
+  // The mode is in the filename: a named export is a different kind of
+  // document and should be identifiable before anyone opens it.
+  const mode = opts.workforce ? '-named' : '';
+  const fileName = `scenario-${opts.input.sourceProject}-${opts.input.destProject}-${opts.input.engineerCount}eng${mode}`
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-');
   doc.save(`${fileName}.pdf`);
