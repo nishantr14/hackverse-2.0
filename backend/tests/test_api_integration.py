@@ -9,6 +9,8 @@ debuggable in the time available.
 
 from __future__ import annotations
 
+import math
+
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import text
@@ -140,8 +142,8 @@ def test_a_single_engineer_move_is_answered_not_degenerated(components):
         result.dest_delta_weeks,
         result.net_cost_rupees,
     ):
-        assert value == value, "NaN out of a scenario that should be answerable"
-        assert abs(value) != float("inf")
+        assert not math.isnan(value), "NaN out of a scenario that should be answerable"
+        assert not math.isinf(value)
 
 
 def test_the_ramp_note_never_says_one_engineer_arrives_as_one(components):

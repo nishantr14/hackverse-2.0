@@ -344,12 +344,20 @@ export function getRecommendationSet(
   engineerCount: number,
   shift: Shift = 'flexible',
   availability?: Weekday[],
+  /**
+   * Left out, the backend derives the skills from the component and says so
+   * in `requirement.basis`. Sent, they are taken as stated and the basis line
+   * changes to match — the screen prints whichever happened, so a typed list
+   * and a guess from a component name never look the same.
+   */
+  requiredSkills?: string[],
 ): Promise<WorkforceRecommendationSet> {
   return post<WorkforceRecommendationSet>('/workforce/recommend', {
     component,
     engineerCount,
     shift,
     availability: availability ?? null,
+    requiredSkills: requiredSkills?.length ? requiredSkills : null,
   });
 }
 
@@ -486,12 +494,16 @@ export interface CandidateSet {
  * Alternates are appended to the recommended set because the screen's job is
  * to show who was considered, not only who won.
  */
-export async function getRecommendations(opening: Opening): Promise<CandidateSet> {
+export async function getRecommendations(
+  opening: Opening,
+  requiredSkills?: string[],
+): Promise<CandidateSet> {
   const set = await getRecommendationSet(
     opening.simulateKey,
     opening.engineersRequired,
     opening.requiredShift,
     opening.requiredAvailability,
+    requiredSkills,
   );
   return {
     candidates: set.recommendedEmployees

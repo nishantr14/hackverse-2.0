@@ -369,3 +369,74 @@ def test_the_same_scenario_scores_identically_twice(seeded):
     assert json.dumps(build_recommendations(body), sort_keys=True) == json.dumps(
         build_recommendations(body), sort_keys=True
     )
+
+
+# --- a custom opening ------------------------------------------------------
+
+
+def test_typed_skills_override_the_derived_ones_and_say_so(seeded):
+    """A custom opening ranks on what was typed, and the basis records it.
+
+    The distinction has to survive into the response: a list read off a
+    component name is a guess, a typed list is a claim somebody is making,
+    and the screen prints `basis` under both. If they came back identical
+    the screen could not tell a reader which had happened.
+    """
+    derived = build_recommendations(
+        RecommendRequest(component="apache/kafka/clients", engineerCount=2,
+                         shift="evening")
+    )
+    typed = build_recommendations(
+        RecommendRequest(component="apache/kafka/clients", engineerCount=2,
+                         shift="evening",
+                         requiredSkills=["Test Automation", "JUnit", "Java"])
+    )
+    assert typed["requirement"]["requiredSkills"] == ["Test Automation", "JUnit", "Java"]
+    assert typed["requirement"]["basis"] != derived["requirement"]["basis"]
+    assert "specified on the opening" in typed["requirement"]["basis"]
+    assert typed["requirement"]["thin"] is False
+
+
+def test_a_custom_opening_reranks_rather_than_returning_the_same_order(seeded):
+    """The feature is worthless if the answer does not move."""
+    preset = build_recommendations(
+        RecommendRequest(component="apache/kafka/clients", engineerCount=2,
+                         shift="evening", availability=["mon", "tue", "wed", "thu"])
+    )
+    custom = build_recommendations(
+        RecommendRequest(component="apache/kafka/tools", engineerCount=2,
+                         shift="morning",
+                         availability=["mon", "tue", "wed", "thu", "fri"],
+                         requiredSkills=["Docker", "Kubernetes", "CI/CD"])
+    )
+
+    def order(body):
+        return [e["name"] for e in body["recommendedEmployees"] + body["alternates"]]
+
+    assert order(preset) != order(custom)
+
+
+def test_a_custom_opening_changes_none_of_the_privacy_behaviour(seeded):
+    """Same gate, same label, same exclusion reporting — a form is an input,
+    not a permission."""
+    custom = build_recommendations(
+        RecommendRequest(component="apache/kafka/tools", engineerCount=2,
+                         shift="morning",
+                         requiredSkills=["Docker", "Kubernetes", "CI/CD"])
+    )
+    assert custom["dataBasis"]["volunteered"] is False
+    assert custom["anonymousCapacity"]["count"] > 0
+    named = {e["name"] for e in custom["recommendedEmployees"] + custom["alternates"]}
+    assert "Kavya Iyer" not in named, "the consent gate loosened for a custom opening"
+    for card in custom["recommendedEmployees"] + custom["alternates"]:
+        assert not (_keys(card, set()) & FORBIDDEN)
+
+
+def test_blank_skills_still_derive_from_the_component(seeded):
+    """An empty list is not a requirement of nothing — it means derive."""
+    blank = build_recommendations(
+        RecommendRequest(component="apache/kafka/clients", engineerCount=2,
+                         shift="evening", requiredSkills=[])
+    )
+    assert blank["requirement"]["requiredSkills"]
+    assert "derived from the component" in blank["requirement"]["basis"]

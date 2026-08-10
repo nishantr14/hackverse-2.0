@@ -50,6 +50,9 @@ class RecommendRequest(BaseModel):
     shift: str = Field(default="flexible", alias="shift")
     availability: list[str] | None = Field(default=None, alias="availability")
     cross_team: bool = Field(default=True, alias="crossTeam")
+    #: Omitted or empty, the component derives them. Supplied, they are taken
+    #: as stated and the requirement's `basis` says which happened.
+    required_skills: list[str] | None = Field(default=None, alias="requiredSkills")
 
     model_config = {"populate_by_name": True}
 
@@ -130,6 +133,7 @@ def build_recommendations(body: RecommendRequest) -> dict[str, Any]:
         engineers_required=body.engineer_count,
         shift=body.shift,
         availability=tuple(body.availability) if body.availability else None,
+        required_skills=tuple(body.required_skills) if body.required_skills else None,
     )
     candidates = store.named_candidates()
     fits, excluded = matching.rank(candidates, req, cross_team=body.cross_team)

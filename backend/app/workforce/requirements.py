@@ -101,11 +101,38 @@ def derive(
     engineers_required: int,
     shift: str = "flexible",
     availability: tuple[str, ...] | None = None,
+    required_skills: tuple[str, ...] | None = None,
 ) -> Requirement:
-    """`component_key` is the simulator's own "repo/component" string."""
+    """`component_key` is the simulator's own "repo/component" string.
+
+    `required_skills` is the one input a human can override. Left out, the
+    skills are read off the component name and the repo language and `basis`
+    says so; supplied, they are taken as stated and `basis` says THAT instead.
+    Which of the two happened has to stay visible, because the derived list is
+    a guess from a string and a typed list is a claim somebody is making — the
+    screen prints the basis line either way and the two must not read alike.
+    """
     repo, _, component = component_key.rpartition("/")
     shift = shift if shift in SHIFTS else "flexible"
     days = tuple(d for d in (availability or WEEKDAYS) if d in WEEKDAYS) or WEEKDAYS
+
+    stated = tuple(s.strip() for s in (required_skills or ()) if s.strip())
+    if stated:
+        # Work areas still come from the component: they map a component to
+        # backend/frontend/data/devops/testing, which is a different question
+        # from which skills the work needs, and nothing in the form asks it.
+        _, areas = _tokens_for(component)
+        return Requirement(
+            project=repo,
+            component=component,
+            engineers_required=engineers_required,
+            required_skills=stated,
+            work_areas=areas,
+            preferred_shift=shift,
+            required_availability=days,
+            thin=False,
+            basis="specified on the opening, not derived from the component",
+        )
 
     skills, areas = _tokens_for(component)
     languages = REPO_LANGUAGES.get(repo, ())

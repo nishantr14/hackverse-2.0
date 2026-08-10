@@ -8,6 +8,7 @@ import { Figure, Headline, Name } from '../components/Headline';
 import { EmployeeRecommendations } from '../components/EmployeeRecommendations';
 import { ImpactPanel } from '../components/ImpactPanel';
 import { IconDownload } from '../components/Icons';
+import { ProjectPicker } from '../components/ProjectPicker';
 import { ScreenHeader } from '../components/ScreenHeader';
 import { getSimulatorProjects, getSpend, runNamedScenario, runScenario } from '../data/api';
 import type {
@@ -19,7 +20,7 @@ import type {
 } from '../data/types';
 import { SHIFT_LABEL } from '../lib/workforce';
 import { formatMoney, formatMoneyDelta, formatWeekDelta } from '../lib/format';
-import { EASE_GLASS, snap } from '../lib/motion';
+import { EASE_GLASS } from '../lib/motion';
 import { buildProjectPalette, colorFor } from '../lib/projectColors';
 import { confidenceShape, lanesFor, sameInput } from '../lib/simulator';
 import { useAsync } from '../lib/useAsync';
@@ -592,62 +593,5 @@ export function SimulatorView() {
         )}
       </div>
     </>
-  );
-}
-
-function ProjectPicker({
-  legend,
-  projects,
-  value,
-  onChange,
-  palette,
-  invalid,
-}: {
-  legend: string;
-  projects: string[];
-  value: string;
-  onChange: (v: string) => void;
-  palette: ReturnType<typeof buildProjectPalette>;
-  invalid?: string | null;
-}) {
-  return (
-    <fieldset className="min-w-0">
-      <legend className="mb-2 text-[11px] tracking-[0.08em] text-[var(--text-secondary)] uppercase">
-        {legend}
-      </legend>
-      <div className="flex flex-wrap gap-1.5">
-        {projects.map((p) => {
-          const active = p === value;
-          const c = colorFor(palette, p);
-          const bad = invalid === p;
-          return (
-            <motion.button
-              key={p}
-              type="button"
-              aria-pressed={active}
-              onClick={() => onChange(p)}
-              transition={snap}
-              className="flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-[12px] transition-colors"
-              style={{
-                borderColor: bad
-                  ? 'rgb(240 101 79 / 0.5)'
-                  : active
-                    ? `rgb(${c.rgb} / 0.7)`
-                    : 'var(--border)',
-                background: active ? `rgb(${c.rgb} / 0.14)` : 'transparent',
-                color: active ? 'var(--text-primary)' : 'var(--text-secondary)',
-              }}
-            >
-              <span
-                aria-hidden
-                className="block h-2 w-2 shrink-0 rounded-full"
-                style={{ background: c.base, opacity: active ? 1 : 0.5 }}
-              />
-              {p}
-            </motion.button>
-          );
-        })}
-      </div>
-    </fieldset>
   );
 }
