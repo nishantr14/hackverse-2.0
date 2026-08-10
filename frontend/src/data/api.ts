@@ -539,8 +539,11 @@ export function getProjectedImpact(): Promise<ProjectedImpact> {
  *   getMyProfile        ->  GET  /workforce/profile
  *   saveMyProfile       ->  PUT  /workforce/profile
  *   getOpenings         ->  GET  /workforce/openings
- *   getCandidates       ->  POST /workforce/recommend
  *   simulateReallocation -> POST /simulate            (REAL, already exists)
+ *
+ * Candidates are NOT in this list any more. `getRecommendations` above calls
+ * the live POST /workforce/recommend, so the fixture-backed ranking that used
+ * to sit here is gone rather than shadowing it.
  * ------------------------------------------------------------------------- */
 
 /**
@@ -576,18 +579,6 @@ export function saveMyProfile(profile: WorkforceProfile): Promise<SavePreference
 
 export function getOpenings(): Promise<Opening[]> {
   return settle(workforce.openings);
-}
-
-/** Ranked against one opening. Sorted here so every consumer sees one order. */
-export function getCandidates(openingId: string): Promise<Candidate[]> {
-  const opening = workforce.openings.find((o) => o.openingId === openingId);
-  if (!opening) {
-    return Promise.reject(new Error(`No opening with id "${openingId}".`));
-  }
-  return settle(
-    [...workforce.candidates].sort((a, b) => b.match - a.match),
-    900,
-  );
 }
 
 /**

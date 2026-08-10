@@ -85,6 +85,30 @@ FROM v_variant_class_summary
 ORDER BY share_of_cost DESC
 """
 
+#: How often finished work was sent back for changes.
+#:
+#: MEASURED HERE, NOT COUNTED OFF THE DRAWN MAP. The map keeps only the top
+#: `limit` transitions by cost, because 168 edges at once is a hairball. That
+#: filter is correct for a picture and wrong for a metric: every inbound edge
+#: to `changes_requested` falls outside the top 20, so counting them on the
+#: filtered graph returned 0 while the log held 440 events — a screen saying
+#: "6% of work takes the rework loop" directly above "returns to review: 0".
+#:
+#: `events` is the direct count of the activity: the number of times a
+#: reviewer sent work back. `cases` is how many distinct work items that
+#: touched, and it must equal the rework_loop variant's n_cases — the two
+#: figures on this screen are then the same fact stated two ways, which is
+#: the property that was missing.
+#: Reads v_event_log, not event_log — the app role is granted on views only
+#: and `event_log` is denied to it outright, which is the privacy rule doing
+#: its job rather than a detail to work around.
+REWORK_RETURNS_SQL = """
+SELECT count(*) AS events, count(DISTINCT case_id) AS cases
+FROM v_event_log
+WHERE activity = 'changes_requested'
+  AND (CAST(:repo AS TEXT) IS NULL OR repo = CAST(:repo AS TEXT))
+"""
+
 
 @router.get("/map")
 def get_map(
@@ -114,6 +138,7 @@ def get_map(
     }
     all_edges = session.execute(text(MAP_EDGES_SQL), params).all()
     summary = session.execute(text(MAP_SUMMARY_SQL)).all()
+    rework = session.execute(text(REWORK_RETURNS_SQL), {"repo": repo}).one()
 
     # Rank by the transition's total cost across variants, so a transition is
     # never half-drawn — keeping one variant's slice of an edge while
@@ -145,6 +170,10 @@ def get_map(
             }
             for e in edges
         ],
+        # Measured from the log, deliberately outside `coverage` — coverage
+        # describes what the picture shows, and this figure is true whether or
+        # not the edges behind it survived the cost filter.
+        "reworkReturns": {"events": int(rework[0]), "cases": int(rework[1])},
         "coverage": {
             "transitionsShown": len(kept),
             "transitionsTotal": len(by_transition),

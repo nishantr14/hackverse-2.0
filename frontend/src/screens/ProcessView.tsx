@@ -31,7 +31,7 @@ export function ProcessView() {
 
   const stats = useMemo(() => (data ? variantStats(data) : []), [data]);
   const offPath = data ? offHappyPathCostShare(data) : 0;
-  const passes = data ? reworkPasses(data) : 0;
+  const passes = data ? reworkPasses(data) : null;
   const items = data ? totalWorkItems(data) : 0;
   /** Sorted by costMultiple, so the first row is the path that overcharges most. */
   const worst = stats[0];
@@ -73,8 +73,8 @@ export function ProcessView() {
           </>
         ),
         sub: `${s.costMultiple.toFixed(1)}× its weight · ${formatMoney(s.cost)} across ${
-          s.passes
-        } recorded transitions.`,
+          s.cases
+        } work items.`,
       };
     }
 
@@ -162,14 +162,29 @@ export function ProcessView() {
                 },
                 {
                   label: 'Returns to review',
-                  value: (
-                    <AnimatedNumber value={passes} format={(n) => `${Math.round(n)}`} duration={0.9} />
-                  ),
-                  detail: 'Times finished work was sent back for changes',
+                  value:
+                    passes === null ? (
+                      <span className="text-[var(--text-muted)]">—</span>
+                    ) : (
+                      <AnimatedNumber
+                        value={passes}
+                        format={(n) => `${Math.round(n)}`}
+                        duration={0.9}
+                      />
+                    ),
+                  detail:
+                    passes === null
+                      ? 'Not reported by this backend'
+                      : `Times finished work was sent back for changes, across ${
+                          data.reworkReturns?.cases ?? 0
+                        } work items`,
                   formula: (
                     <>
-                      Count of every transition into <strong>changes requested</strong> in the event
-                      log, summed across all variants.
+                      Count of every <strong>changes requested</strong> event in the log. Measured
+                      directly, not counted off the map above — the map is filtered to the costliest
+                      transitions so it stays legible, and the returns to review sit below that cut.
+                      The {data.reworkReturns?.cases ?? 0} work items behind it are the same{' '}
+                      {data.reworkReturns?.cases ?? 0} on the rework loop.
                     </>
                   ),
                 },

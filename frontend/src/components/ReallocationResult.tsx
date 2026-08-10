@@ -201,10 +201,23 @@ export function ReallocationResult({
           style={{ borderColor: 'var(--border-strong)' }}
         >
           <div>
+            {/* NEUTRAL HEADING, SIGNED FIGURE — the same pairing as every line
+                above, where "Relocation package" carries no direction and the
+                −₹1L beside it carries all of it.
+
+                This used to read "Net expected cost" over "−₹3.3L", which is a
+                double negative: a cost of minus 3.3 lakh is a saving, and the
+                move it described costs 3.3 lakh. Naming the direction in the
+                heading AND in the sign meant the two could disagree, so the
+                heading stops naming it and the sentence below says it in
+                words instead. */}
             <p className="text-[12px] tracking-[0.08em] text-[var(--text-secondary)] uppercase">
-              Net expected {impact.netBenefitRupees >= 0 ? 'benefit' : 'cost'}
+              Net expected impact
             </p>
             <p className="mt-1 text-[11.5px] text-[var(--text-muted)]">
+              {impact.netBenefitRupees >= 0
+                ? `This move saves ${formatMoney(Math.abs(impact.netBenefitRupees))} overall.`
+                : `This move costs ${formatMoney(Math.abs(impact.netBenefitRupees))} overall.`}{' '}
               Simulated delivery impact plus the scenario assumptions above.
             </p>
           </div>
