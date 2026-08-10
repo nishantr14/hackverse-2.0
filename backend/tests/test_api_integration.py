@@ -127,6 +127,57 @@ def test_ramp_up_means_the_destination_gains_less_than_it_was_given(components):
     assert "effective engineers" in (result.ramp_up_note or "")
 
 
+def test_a_single_engineer_move_is_answered_not_degenerated(components):
+    """n=1 is the move a director actually makes, and the maths was written
+    for larger ones. Nothing may collapse, clamp or divide by zero there."""
+    result = run(
+        Scenario(source=components[0], destination=components[1], engineer_count=1)
+    )
+    assert result.source_delta_weeks > 0
+    assert result.dest_delta_weeks < 0
+    for value in (
+        result.source_delta_weeks,
+        result.dest_delta_weeks,
+        result.net_cost_rupees,
+    ):
+        assert value == value, "NaN out of a scenario that should be answerable"
+        assert abs(value) != float("inf")
+
+
+def test_the_ramp_note_never_says_one_engineer_arrives_as_one(components):
+    """The n=1 regression this test is named after.
+
+    Reported to one decimal place, a blend of 0.98 rendered as "the
+    destination gains 1.0 effective engineers, not 1" — a sentence that
+    states the ramp penalty and denies it in the same breath, at exactly the
+    headcount where the penalty is the entire finding. The figure must stay
+    distinguishable from `n` however small the move is.
+    """
+    result = run(
+        Scenario(source=components[0], destination=components[1], engineer_count=1)
+    )
+    note = result.ramp_up_note or ""
+    assert "1.0 effective engineers, not 1" not in note
+    assert "1.00 effective engineers, not 1" not in note
+    # Singular subject takes a singular verb; the string is on screen.
+    assert "1 engineers" not in note
+    assert "1 engineer contribute " not in note
+
+
+def test_the_confidence_band_does_not_pretend_to_narrow_with_headcount(components):
+    """The band is delivery-rate variance, which `n` does not enter.
+
+    Pinned deliberately: it is scale-free on purpose, so a future change that
+    makes it move with `n` is a claim that a bigger move is better measured,
+    which nothing in the model supports. If that claim ever becomes true it
+    should break this test and be argued for.
+    """
+    one = run(Scenario(source=components[0], destination=components[1], engineer_count=1))
+    many = run(Scenario(source=components[0], destination=components[1], engineer_count=10))
+    assert one.confidence_low == many.confidence_low
+    assert one.confidence_high == many.confidence_high
+
+
 def test_a_bigger_move_never_helps_the_destination_less(components):
     small = run(Scenario(source=components[0], destination=components[1], engineer_count=2))
     large = run(Scenario(source=components[0], destination=components[1], engineer_count=8))

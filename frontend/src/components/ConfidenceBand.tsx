@@ -1,6 +1,6 @@
 import { motion } from 'framer-motion';
 import { EASE_GLASS } from '../lib/motion';
-import type { ConfidenceShape } from '../lib/simulator';
+import { bandVerdict, type ConfidenceShape } from '../lib/simulator';
 
 /**
  * Confidence, drawn before it is stated.
@@ -23,8 +23,7 @@ interface ConfidenceBandProps {
 }
 
 export function ConfidenceBand({ low, high, percent, conf, rgb, revealed }: ConfidenceBandProps) {
-  const verdict =
-    conf.certainty > 0.55 ? 'Narrow band' : conf.certainty > 0.35 ? 'Moderate band' : 'Wide band';
+  const verdict = bandVerdict(conf);
 
   return (
     <div>
@@ -66,16 +65,14 @@ export function ConfidenceBand({ low, high, percent, conf, rgb, revealed }: Conf
           transition={{ duration: 0.7, ease: EASE_GLASS, delay: 0.5 }}
         />
 
-        {percent !== undefined && (
-          <motion.span
-            aria-hidden
-            className="absolute inset-y-1 w-[2px] rounded-full"
-            style={{ left: `${percent}%`, background: `rgb(${rgb})` }}
-            initial={{ opacity: 0 }}
-            animate={{ opacity: revealed ? 0.9 : 0 }}
-            transition={{ duration: 0.4, ease: EASE_GLASS, delay: 0.8 }}
-          />
-        )}
+        {/* NOTHING IS MARKED INSIDE THE BAND, DELIBERATELY.
+            A tick used to sit at `left: ${percent}%`, which put a confidence
+            LEVEL on a percentile axis — two different quantities sharing a
+            0–100 range and nothing else. Drawn among gridlines at 25/50/75 it
+            read as a point estimate within the forecast, which is the one
+            thing this component exists to avoid implying. There is no median
+            to put there instead: the backend sends a range and a level, and
+            neither is a central estimate. The range is the answer. */}
       </div>
 
       <p className="mt-2 text-[11.5px] leading-relaxed text-[var(--text-secondary)]">

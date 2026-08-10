@@ -52,6 +52,29 @@ export function confidenceShape(out: SimulatorOutput): ConfidenceShape {
   };
 }
 
+/**
+ * "Narrow" / "Moderate" / "Wide", from the band's actual width.
+ *
+ * WHAT THIS EXISTS TO PREVENT. `SimulatorOutput.confidencePercent` is a
+ * confidence LEVEL — the backend computes it as `100 − spread` — and it is not
+ * the band's width, not a ± tolerance, and not a percentage anything is plus
+ * or minus. The Workforce card read it as one and printed "±63.9%" for a band
+ * whose real width is 36.1 points, then called that band wide precisely
+ * because confidence was HIGH. Both screens now go through this function, so
+ * they cannot disagree about what "wide" means, and neither can reach for the
+ * level when it wants the width.
+ *
+ * The width is always `confidenceHigh − confidenceLow`. There is no other
+ * expression for it.
+ */
+export function bandVerdict(conf: ConfidenceShape): 'Narrow band' | 'Moderate band' | 'Wide band' {
+  return conf.certainty > 0.55
+    ? 'Narrow band'
+    : conf.certainty > 0.35
+      ? 'Moderate band'
+      : 'Wide band';
+}
+
 export interface Lane {
   project: string;
   /** Positive slips later, negative pulls earlier. */

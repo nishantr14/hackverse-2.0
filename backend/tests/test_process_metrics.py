@@ -41,7 +41,8 @@ from fastapi.testclient import TestClient
 from app.main import app
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-PROCESS_LIB = REPO_ROOT / "frontend" / "src" / "lib" / "process.ts"
+FRONTEND_SRC = REPO_ROOT / "frontend" / "src"
+PROCESS_LIB = FRONTEND_SRC / "lib" / "process.ts"
 
 #: Functions whose output is a MEASUREMENT rendered as a headline figure, as
 #: opposed to geometry. Anything here must be independent of the cost filter.
@@ -175,4 +176,97 @@ def test_the_work_item_total_is_bigger_than_the_drawn_graph_can_account_for(
         "counting work items off the drawn edges now agrees with the real "
         "total; if that is genuine the filter is gone, and if it is not, "
         "something is summing the wrong set again"
+    )
+
+
+# --- confidencePercent is a LEVEL, not a width -----------------------------
+#
+# Same family of defect as everything above: a field whose meaning is not
+# obvious from its name, read as if it meant something else. The backend sends
+# `confidencePercent = 100 - spread`, a confidence LEVEL. The band's width is
+# `confidenceHigh - confidenceLow` and nothing else. The Workforce card printed
+# the level as "±63.9%" for a band 36.1 points wide, and called that band wide
+# *because* confidence was high — the test ran the wrong way round.
+
+
+def test_the_backend_sends_a_level_not_a_width(client, pg_engine):
+    """Pins the contract the frontend guard below depends on.
+
+    If `confidencePercent` ever becomes the width, this fails first and the
+    frontend guard becomes wrong rather than merely stale.
+    """
+    body = client.get("/simulate/components?limit=4").json()
+    projects = body["projects"]
+    result = client.post(
+        "/simulate",
+        json={
+            "sourceProject": projects[0],
+            "destProject": projects[1],
+            "engineerCount": 3,
+        },
+    ).json()
+    width = result["confidenceHigh"] - result["confidenceLow"]
+    assert result["confidencePercent"] == pytest.approx(100 - width, abs=0.2)
+    # The two are far apart on real data, which is why confusing them was
+    # visible rather than harmless.
+    assert result["confidencePercent"] != pytest.approx(width, abs=1.0)
+
+
+def test_no_screen_renders_the_confidence_level_as_a_tolerance():
+    """`±confidencePercent` is the exact bug, in any file.
+
+    A ± prefix claims the number is a half-width around a point estimate.
+    `confidencePercent` is neither half nor a width, so the two must never
+    appear together — and the width is available two fields away.
+    """
+    offenders = []
+    pattern = re.compile(r"±\s*\$\{[^}]*confidencePercent")
+    for path in FRONTEND_SRC.rglob("*.ts*"):
+        # Comments stripped: the fix documents the bug it replaced by quoting
+        # it, so a scan over raw text finds the explanation and reports the
+        # file that was corrected as the file that is broken.
+        text_ = _strip_comments(path.read_text(encoding="utf-8"))
+        if pattern.search(text_):
+            offenders.append(str(path.relative_to(FRONTEND_SRC)))
+    assert not offenders, (
+        f"confidence LEVEL rendered as a ± tolerance in: {offenders}. "
+        "The width is confidenceHigh - confidenceLow."
+    )
+
+
+def test_wide_band_is_decided_by_width_everywhere_it_is_decided():
+    """One definition of "wide", used by every screen that says the word.
+
+    It was inlined three times — the Simulator's band, the PDF export, and the
+    Workforce card, and the Workforce copy tested the wrong field in the wrong
+    direction. Anything comparing `confidencePercent` against a threshold is
+    that bug returning.
+    """
+    threshold = re.compile(r"confidencePercent\s*(>=|>|<=|<)\s*\d")
+    offenders = [
+        str(p.relative_to(FRONTEND_SRC))
+        for p in FRONTEND_SRC.rglob("*.ts*")
+        if threshold.search(_strip_comments(p.read_text(encoding="utf-8")))
+    ]
+    assert not offenders, (
+        f"a band verdict is being taken from the confidence LEVEL in: "
+        f"{offenders}. Use bandVerdict(confidenceShape(output))."
+    )
+
+
+def test_nothing_is_positioned_on_the_percentile_axis_by_the_confidence_level():
+    """The third instance of the same root cause, pinned.
+
+    `ConfidenceBand` drew a tick at `left: ${percent}%` on the P10-P90 track.
+    A confidence level and a percentile share a 0-100 range and nothing else,
+    so the mark read as a point estimate inside the forecast — the one claim
+    that component exists to avoid making. There is no median to put there
+    instead; the backend sends a range and a level, and neither is a central
+    estimate.
+    """
+    band = FRONTEND_SRC / "components" / "ConfidenceBand.tsx"
+    source = _strip_comments(band.read_text(encoding="utf-8"))
+    assert "left: `${percent}" not in source, (
+        "the confidence level is being used as a coordinate on the percentile "
+        "axis again. It is not one, and there is no median to substitute."
     )

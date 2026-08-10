@@ -3,6 +3,7 @@ import type { Candidate, Opening, SimulatorOutput } from '../data/types';
 import { formatMoney, formatMoneyDelta } from '../lib/format';
 import { EASE_GLASS } from '../lib/motion';
 import { FEASIBILITY_LABEL, type NetImpact, type ProjectOutcome } from '../lib/reallocation';
+import { bandVerdict, confidenceShape } from '../lib/simulator';
 import { GlassCard } from './GlassCard';
 
 /**
@@ -85,6 +86,8 @@ export function ReallocationResult({
   destHeadcount: number | null;
 }) {
   const proceed = impact.verdict === 'proceed';
+  // Same derivation as the Simulator's band, from the same two fields.
+  const conf = confidenceShape(sim);
 
   return (
     <motion.div
@@ -148,8 +151,16 @@ export function ReallocationResult({
             <p className="text-[11px] tracking-[0.08em] text-[var(--text-secondary)] uppercase">
               Confidence band
             </p>
+            {/* P10–P90, the same readout the Simulator gives, from the same
+                two fields. This printed `±confidencePercent` — a confidence
+                LEVEL rendered as a tolerance, so a band of 32–68 was reported
+                as "±63.9%", a number that is neither the width nor a bound. */}
             <p className="tnum mt-1 text-[16px] font-semibold text-[var(--text-primary)]">
-              {sim.confidencePercent === undefined ? 'Not reported' : `±${sim.confidencePercent}%`}
+              {sim.confidenceLow}–{sim.confidenceHigh}%
+            </p>
+            <p className="mt-1 text-[11px] text-[var(--text-muted)]">
+              {bandVerdict(conf)} · {conf.spread.toFixed(1)} points wide
+              {sim.confidencePercent !== undefined && ` · ${sim.confidencePercent}% confidence`}
             </p>
           </div>
         </div>

@@ -1,7 +1,7 @@
 import { jsPDF } from 'jspdf';
 import type { SimulatorInput, SimulatorOutput } from '../data/types';
 import { formatWeekDelta } from './format';
-import { confidenceShape } from './simulator';
+import { bandVerdict, confidenceShape } from './simulator';
 
 /**
  * One-page PDF export of a run scenario result.
@@ -213,8 +213,10 @@ export function buildScenarioDoc({ input, output, productName = 'Engineering Spe
   doc.text('CONFIDENCE', MARGIN, y);
   y += 7;
 
-  const verdictLabel =
-    conf.certainty > 0.55 ? 'Narrow band' : conf.certainty > 0.35 ? 'Moderate band' : 'Wide band';
+  // Reads the width correctly, but was the third inline copy of these
+  // thresholds. One function now, so a PDF and the screen it was exported
+  // from cannot call the same band by two different names.
+  const verdictLabel = bandVerdict(conf);
 
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(11);

@@ -6,6 +6,7 @@ import type {
   SimulatorOutput,
   Verdict,
 } from '../data/types';
+import { bandVerdict, confidenceShape } from './simulator';
 
 /**
  * Reallocation economics.
@@ -232,10 +233,23 @@ export function netImpact(
       );
     }
 
-    // Optional on the contract, so absence must not read as "narrow band".
-    if (sim.confidencePercent !== undefined && sim.confidencePercent >= 40) {
+    /**
+     * WIDTH, NOT LEVEL, AND THE TEST RUNS THE RIGHT WAY ROUND.
+     *
+     * This read `confidencePercent >= 40` and printed "±confidencePercent%".
+     * That field is `100 − spread`, a confidence LEVEL: the condition fired
+     * when the forecast was CONFIDENT and called it wide, and the number it
+     * quoted — 63.9 for a 32–68 band — was neither the width (36.1 points)
+     * nor a bound. Width comes from `confidenceHigh − confidenceLow` and from
+     * nowhere else, and the verdict is the Simulator's own function so the two
+     * screens cannot drift apart on what "wide" means.
+     */
+    const conf = confidenceShape(sim);
+    if (bandVerdict(conf) === 'Wide band') {
       rationale.push(
-        `Confidence band is wide (±${sim.confidencePercent}%). Treat the figure as a direction, not a budget.`,
+        `Confidence band is wide — P10–P90 spans ${conf.spread.toFixed(1)} points ` +
+          `(${sim.confidenceLow}–${sim.confidenceHigh}%). Treat the figure as a ` +
+          'direction, not a budget.',
       );
     }
   }

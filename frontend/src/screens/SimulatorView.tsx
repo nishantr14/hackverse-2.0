@@ -64,7 +64,17 @@ const NO_PROJECTS: string[] = [];
  * is a rounding error on the throughput. These sizes produce a delta big
  * enough to read while staying well inside what the source can spare.
  */
-const COUNTS = [5, 10, 25];
+/**
+ * Headcount options.
+ *
+ * 1 leads because it is the move a director actually makes. The larger
+ * numbers are the ones that make a slide; a single transfer is the one that
+ * happens on a Tuesday, and the maths is defined there — the source loses
+ * 1/N of its capacity and the destination gains one ramping engineer, with
+ * no term that degenerates. Read the ramp-up note beside the result: at n=1
+ * it is the whole story.
+ */
+const COUNTS = [1, 2, 3, 5, 10, 25];
 
 /**
  * The shifts the named mode can staff for. `flexible` first because it is the
@@ -291,7 +301,10 @@ export function SimulatorView() {
                   <span className="text-[11px] tracking-[0.08em] text-[var(--text-secondary)] uppercase">
                     How many
                   </span>
-                  <div className="flex gap-1.5">
+                  {/* wraps rather than overflowing: six chips is 246px on one
+                      line, which fits the control row on a laptop and does not
+                      on a narrow window. */}
+                  <div className="flex flex-wrap gap-1.5">
                     {COUNTS.map((n) => {
                       const active = n === count;
                       return (

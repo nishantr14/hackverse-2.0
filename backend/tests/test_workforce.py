@@ -202,6 +202,27 @@ def test_the_scorer_never_reads_the_declared_staffing_block():
         assert token not in source, f"matching.py reads {token!r}, which it may not score"
 
 
+def test_a_single_person_opening_still_offers_alternates(seeded):
+    """n=1 names one person and still shows who else was considered.
+
+    The slice is `fits[:n]` and `fits[n:n+3]`, so n=1 is the case where the
+    recommended list is shortest and the alternates matter most — a single
+    name with nothing beside it reads as the only candidate rather than as
+    the top of a ranking a human is meant to review.
+    """
+    body = build_recommendations(
+        RecommendRequest(component="apache/kafka/clients", engineerCount=1,
+                         shift="evening", availability=["mon", "tue", "wed", "thu"])
+    )
+    assert len(body["recommendedEmployees"]) == 1
+    assert len(body["alternates"]) >= 1
+    top = body["recommendedEmployees"][0]["matchScore"]
+    assert all(a["matchScore"] <= top for a in body["alternates"])
+    # The gate does not loosen just because only one person is wanted.
+    assert body["anonymousCapacity"]["count"] > 0
+    assert body["dataBasis"]["volunteered"] is False
+
+
 def test_a_named_card_carries_the_declared_staffing_it_needs(seeded):
     """The director's card cannot render without these, and a `{}` staffing
     block would degrade it silently rather than fail."""

@@ -227,6 +227,11 @@ def run(scenario: Scenario) -> Result:
         if horizon <= RAMP_WEEKS
         else (RAMP_EFFICIENCY * RAMP_WEEKS + (horizon - RAMP_WEEKS)) / horizon
     )
+    # Reported to 2dp, not 1. At n=1 over a long horizon the blend lands
+    # around 0.98, which `.1f` rendered as "gains 1.0 effective engineers,
+    # not 1" — a sentence that contradicts itself and erases the only thing
+    # it exists to say. The rounding was invisible at n=25 (24.5 vs 25) and
+    # wrong at the size a director actually moves people in.
     effective_added = n * ramp_blend
     dest_after = (
         dest.items_per_week * (dest.n_engineers + effective_added) / dest.n_engineers
@@ -258,10 +263,11 @@ def run(scenario: Scenario) -> Result:
         confidence_percent=round(100 - spread, 1),
         ramp_up_penalty_applied=True,
         ramp_up_note=(
-            f"{n} engineer{'s' if n > 1 else ''} contribute at "
-            f"{RAMP_EFFICIENCY:.0%} for {RAMP_WEEKS} weeks before reaching "
-            f"{dest.component}'s pace — the destination gains "
-            f"{effective_added:.1f} effective engineers, not {n}."
+            f"{n} engineer{'s' if n > 1 else ''} "
+            f"contribute{'' if n > 1 else 's'} at {RAMP_EFFICIENCY:.0%} for "
+            f"{RAMP_WEEKS} weeks before reaching full pace on {dest.component} "
+            f"— the destination gains {effective_added:.2f} effective "
+            f"engineers, not {n}."
         ),
         priced=priced,
         price_note=price_note,
